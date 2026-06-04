@@ -38,3 +38,29 @@ fn strip_cargo_subcommand(args: impl Iterator<Item = OsString>) -> Vec<OsString>
     }
     args
 }
+
+#[cfg(test)]
+mod tests {
+    use super::strip_cargo_subcommand;
+    use std::ffi::OsString;
+
+    fn argv(parts: &[&str]) -> Vec<OsString> {
+        parts.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn drops_cargo_injected_subcommand() {
+        let stripped =
+            strip_cargo_subcommand(argv(&["cargo-npmgen", "npmgen", "--out", "x"]).into_iter());
+        assert_eq!(stripped, argv(&["cargo-npmgen", "--out", "x"]));
+    }
+
+    #[test]
+    fn leaves_direct_invocations_untouched() {
+        let standalone = strip_cargo_subcommand(argv(&["npmgen", "--out", "x"]).into_iter());
+        assert_eq!(standalone, argv(&["npmgen", "--out", "x"]));
+
+        let direct = strip_cargo_subcommand(argv(&["cargo-npmgen", "--out", "x"]).into_iter());
+        assert_eq!(direct, argv(&["cargo-npmgen", "--out", "x"]));
+    }
+}

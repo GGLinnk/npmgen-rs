@@ -1,0 +1,11 @@
+[package]
+name = "vtool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "vtool"
+path = "src/main.rs"

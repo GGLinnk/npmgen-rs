@@ -79,3 +79,50 @@ impl<'a> MetaPackage<'a> {
         path.split(['/', '\\']).next().unwrap_or(path).to_owned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MetaPackage;
+    use crate::config::Launcher;
+    use crate::project::sample_project;
+    use crate::target::Target;
+    use serde_json::json;
+
+    #[test]
+    fn wires_launcher_bin_and_merges_extra_over_computed_fields() {
+        let mut project = sample_project();
+        project.config.launcher = Some(Launcher::Detailed {
+            file: "launch.mjs".to_owned(),
+            bin: Some("mytool".to_owned()),
+        });
+        project
+            .config
+            .extra
+            .insert("keywords".to_owned(), json!(["hook"]));
+        // extra deliberately overrides a computed identity field.
+        project
+            .config
+            .extra
+            .insert("license".to_owned(), json!("Apache-2.0"));
+
+        let targets = [Target::from_triple("x86_64-unknown-linux-gnu").unwrap()];
+        let value = MetaPackage::new(&project, &targets).to_value();
+
+        assert_eq!(value["bin"], json!({ "mytool": "launch.mjs" }));
+        assert_eq!(value["keywords"], json!(["hook"]));
+        assert_eq!(value["license"], json!("Apache-2.0"));
+        assert_eq!(
+            value["optionalDependencies"]["@gglinnk/nocmd-linux-x64"],
+            json!("0.1.1")
+        );
+    }
+
+    #[test]
+    fn omits_bin_when_launcher_declares_none() {
+        let mut project = sample_project();
+        project.config.launcher = Some(Launcher::File("launch.mjs".to_owned()));
+        let value = MetaPackage::new(&project, &[]).to_value();
+        assert!(value.get("bin").is_none());
+        assert_eq!(value["files"], json!(["launch.mjs"]));
+    }
+}

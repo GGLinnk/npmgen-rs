@@ -1,4 +1,6 @@
 /target
 crates/core/tests/fixture_crate/target
 crates/core/tests/fixture_crate/Cargo.lock
+crates/core/tests/fixture_workspace/target
+crates/core/tests/fixture_workspace/Cargo.lock
 *.local.*

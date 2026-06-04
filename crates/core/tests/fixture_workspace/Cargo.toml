@@ -1,0 +1,16 @@
+# Virtual workspace fixture: the root has no [package], so identity must come
+# from [workspace.package] and config from [workspace.metadata.npmgen].
+[workspace]
+members = ["app"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+license = "MIT"
+description = "Virtual workspace tool."
+repository = "https://github.com/acme/vtool"
+authors = ["Acme Dev <dev@acme.test>"]
+
+[workspace.metadata.npmgen]
+bin = "vtool"
+manifests = [".claude-plugin/plugin.json"]

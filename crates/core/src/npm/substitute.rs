@@ -215,4 +215,32 @@ mod tests {
         assert!(matches!(error, NpmError::UnknownVariable { .. }));
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn toml_substitution_round_trips_and_ends_with_newline() {
+        let path = scratch("manifest.toml");
+        std::fs::write(
+            &path,
+            "name = \"${name}\"\nblurb = \"${description}\"\n\n[nested]\ninner = \"${name}\"\nlist = [\"${version}\", \"plain\"]\n",
+        )
+        .unwrap();
+
+        let variables = variables();
+        let RenderedManifest::Toml(rendered) =
+            ManifestRenderer::new(&variables).render(&path).unwrap()
+        else {
+            panic!("expected toml");
+        };
+
+        assert!(rendered.ends_with('\n'));
+        let reparsed: toml::Value = toml::from_str(&rendered).unwrap();
+        assert_eq!(
+            reparsed["blurb"].as_str(),
+            Some(variables["description"].as_str())
+        );
+        assert_eq!(reparsed["nested"]["inner"].as_str(), Some("nocmd"));
+        assert_eq!(reparsed["nested"]["list"][0].as_str(), Some("0.1.1"));
+
+        let _ = std::fs::remove_file(&path);
+    }
 }
