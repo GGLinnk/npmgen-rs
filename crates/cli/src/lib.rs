@@ -18,9 +18,22 @@ pub fn main() {
     init_tracing();
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args_os()));
     if let Err(error) = cli.run() {
-        tracing::error!(%error, "npmgen failed");
+        tracing::error!("npmgen failed: {}", error_chain(&error));
         std::process::exit(1);
     }
+}
+
+/// Render an error and its full source chain (`top: cause: root-cause`), so the
+/// underlying cargo/IO/build failure is not hidden behind the facade message.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 fn init_tracing() {
