@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 
 use crate::config::TargetSpec;
 
+/// Cargo profile directory the release build lands in; must agree with the
+/// `--release` flag the build driver passes.
+pub(crate) const RELEASE_PROFILE_DIR: &str = "release";
+
 /// A resolved platform: the npm key, its npm `os`/`cpu` install filters, the
 /// Rust target triple to build, and whether the binary carries a `.exe`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,7 +100,7 @@ impl Target {
     pub fn binary_path(&self, target_directory: &Path, bin: &str) -> PathBuf {
         target_directory
             .join(&self.triple)
-            .join("release")
+            .join(RELEASE_PROFILE_DIR)
             .join(self.binary_filename(bin))
     }
 
@@ -113,11 +117,11 @@ impl Target {
     }
 
     fn is_windows_system(system: &str) -> bool {
-        system == "windows"
+        system == defaults::WINDOWS_SYSTEM
     }
 
     fn is_windows_os(os: &str) -> bool {
-        os == "win32"
+        os == defaults::WINDOWS_OS
     }
 
     fn lookup(table: &[(&str, &'static str)], needle: &str) -> Option<&'static str> {

@@ -1,66 +1,45 @@
 //! Phase 1: cross-build the binary for each target.
 //!
-//! The [`Compiler`] orchestrates a build driver (cargo by default) rather than
-//! bundling a cross-compiler: it invokes `<driver> build --release --target
-//! <triple>`, so pointing the driver at `cross`/`cargo-zigbuild` works with no
-//! code change. Toolchain installation remains the caller's responsibility.
+//! [`Compiler`] drives an injected [`BuildDriver`] (the default [`CargoDriver`]
+//! shells out to cargo) and verifies each artifact lands where the assembly
+//! phase looks for it. Swapping the driver makes the build phase mockable and
+//! lets a non-cargo backend slot in without bundling a cross-compiler.
+
+mod cargo;
+mod driver;
+
+pub use cargo::CargoDriver;
+pub use driver::BuildDriver;
 
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus};
-
-use tracing::info;
+use std::process::ExitStatus;
 
 use crate::project::Project;
 use crate::target::Target;
 
-/// Builds target binaries with a configurable build driver.
-pub struct Compiler {
-    driver: String,
+/// Builds target binaries through an injected [`BuildDriver`].
+#[derive(Debug)]
+pub struct Compiler<'a> {
+    driver: &'a dyn BuildDriver,
 }
 
-impl Compiler {
-    /// Create a compiler driven by `driver` (e.g. `cargo`, `cross`).
-    pub fn new(driver: impl Into<String>) -> Self {
-        Self {
-            driver: driver.into(),
-        }
+impl<'a> Compiler<'a> {
+    pub fn new(driver: &'a dyn BuildDriver) -> Self {
+        Self { driver }
     }
 
-    /// Build every target, verifying each artifact lands where the assembly
+    /// Build every target, verifying each artifact exists where the assembly
     /// phase will look for it.
     pub fn compile_all(&self, project: &Project, targets: &[Target]) -> Result<(), CompileError> {
         for target in targets {
-            self.compile_one(project, target)?;
-        }
-        Ok(())
-    }
-
-    fn compile_one(&self, project: &Project, target: &Target) -> Result<(), CompileError> {
-        info!(triple = %target.triple, bin = %project.bin, "building");
-        let status = Command::new(&self.driver)
-            .args(["build", "--release", "--target"])
-            .arg(&target.triple)
-            .arg("--bin")
-            .arg(&project.bin)
-            .current_dir(&project.workspace_root)
-            .status()
-            .map_err(|source| CompileError::Spawn {
-                driver: self.driver.clone(),
-                source,
-            })?;
-        if !status.success() {
-            return Err(CompileError::BuildFailed {
-                triple: target.triple.clone(),
-                status,
-            });
-        }
-
-        let path = target.binary_path(&project.target_directory, &project.bin);
-        if !path.is_file() {
-            return Err(CompileError::BinaryMissing {
-                triple: target.triple.clone(),
-                path,
-            });
+            self.driver.build(project, target)?;
+            let path = target.binary_path(&project.target_directory, &project.bin);
+            if !path.is_file() {
+                return Err(CompileError::BinaryMissing {
+                    triple: target.triple.clone(),
+                    path,
+                });
+            }
         }
         Ok(())
     }
@@ -79,6 +58,70 @@ pub enum CompileError {
     #[error("build for {triple} failed: {status}")]
     BuildFailed { triple: String, status: ExitStatus },
 
-    #[error("binary not found after a successful build: {}", path.display())]
+    #[error("binary for {triple} not found after a successful build: {}", path.display())]
     BinaryMissing { triple: String, path: PathBuf },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BuildDriver, CompileError, Compiler};
+    use crate::project::{Project, sample_project};
+    use crate::target::Target;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("npmgen-compile-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Reports success without producing any artifact.
+    #[derive(Debug)]
+    struct NoopDriver;
+    impl BuildDriver for NoopDriver {
+        fn build(&self, _project: &Project, _target: &Target) -> Result<(), CompileError> {
+            Ok(())
+        }
+    }
+
+    /// Writes the artifact where the assembly phase expects it.
+    #[derive(Debug)]
+    struct PlacingDriver;
+    impl BuildDriver for PlacingDriver {
+        fn build(&self, project: &Project, target: &Target) -> Result<(), CompileError> {
+            let path = target.binary_path(&project.target_directory, &project.bin);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"binary").unwrap();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn missing_binary_after_a_successful_build_is_an_error() {
+        let mut project = sample_project();
+        project.target_directory = scratch("missing");
+        project.bin = "tool".to_owned();
+        let target = Target::from_triple("x86_64-unknown-linux-gnu").unwrap();
+
+        let error = Compiler::new(&NoopDriver)
+            .compile_all(&project, std::slice::from_ref(&target))
+            .unwrap_err();
+        assert!(matches!(error, CompileError::BinaryMissing { .. }));
+        let _ = fs::remove_dir_all(&project.target_directory);
+    }
+
+    #[test]
+    fn verifies_a_placed_binary() {
+        let mut project = sample_project();
+        project.target_directory = scratch("placed");
+        project.bin = "tool".to_owned();
+        let target = Target::from_triple("x86_64-unknown-linux-gnu").unwrap();
+
+        Compiler::new(&PlacingDriver)
+            .compile_all(&project, std::slice::from_ref(&target))
+            .unwrap();
+        let _ = fs::remove_dir_all(&project.target_directory);
+    }
 }

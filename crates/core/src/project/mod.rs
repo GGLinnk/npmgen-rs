@@ -21,6 +21,9 @@ use cargo_metadata::{MetadataCommand, Package};
 
 use crate::config::Config;
 
+/// Metadata table key under `[package.metadata.*]` / `[workspace.metadata.*]`.
+const METADATA_KEY: &str = "npmgen";
+
 /// Identity overrides supplied on the command line. Each `Some` wins over the
 /// value read from the manifest.
 #[derive(Debug, Clone, Default)]
@@ -44,6 +47,9 @@ pub struct Project {
     pub repository: String,
     /// Cargo bin name to build and ship.
     pub bin: String,
+    /// Selected cargo package name, passed as `--package` to the build. `None`
+    /// when describing a virtual workspace root with no package selected.
+    pub package: Option<String>,
     pub config: Config,
     pub workspace_root: PathBuf,
     pub target_directory: PathBuf,
@@ -100,8 +106,8 @@ impl Project {
         let selected = Self::select_package(&metadata, overrides.package.as_deref())?;
 
         let npmgen_value = selected
-            .and_then(|package| package.metadata.get("npmgen"))
-            .or_else(|| metadata.workspace_metadata.get("npmgen"))
+            .and_then(|package| package.metadata.get(METADATA_KEY))
+            .or_else(|| metadata.workspace_metadata.get(METADATA_KEY))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let config = Config::from_metadata(&npmgen_value)?;
@@ -143,6 +149,8 @@ impl Project {
             .or_else(|| config.bin.clone())
             .unwrap_or_else(|| identity.name.clone());
 
+        let package = selected.map(|package| package.name.as_str().to_owned());
+
         Ok(Self {
             author: Author::parse(&author_full),
             version,
@@ -150,6 +158,7 @@ impl Project {
             license,
             repository,
             bin,
+            package,
             identity,
             config,
             workspace_root,
@@ -249,5 +258,68 @@ impl WorkspacePackage {
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned),
         })
+    }
+}
+
+/// A nocmd-shaped [`Project`] for tests in this crate (no filesystem or cargo
+/// metadata needed). Override individual fields per test.
+#[cfg(test)]
+pub(crate) fn sample_project() -> Project {
+    Project {
+        identity: Identity {
+            scope: "@gglinnk".to_owned(),
+            name: "nocmd".to_owned(),
+            git_url: "git+https://github.com/gglinnk/nocmd.git".to_owned(),
+        },
+        version: "0.1.1".to_owned(),
+        description: "a hook".to_owned(),
+        author: Author::parse("Gabriel GRONDIN <gglinnk@protonmail.com>"),
+        license: "MIT".to_owned(),
+        repository: "https://github.com/gglinnk/nocmd".to_owned(),
+        bin: "nocmd".to_owned(),
+        package: Some("nocmd".to_owned()),
+        config: Config::default(),
+        workspace_root: PathBuf::from("."),
+        target_directory: PathBuf::from("target"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkspacePackage;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("npmgen-ws-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reads_workspace_package_fields_and_first_author() {
+        let dir = scratch("read");
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\n[workspace.package]\nversion = \"3.1.4\"\ndescription = \"d\"\nrepository = \"https://h/o/r\"\nlicense = \"MIT\"\nauthors = [\"A <a@b>\", \"B\"]\n",
+        )
+        .unwrap();
+
+        let workspace = WorkspacePackage::read(&dir).unwrap();
+        assert_eq!(workspace.version.as_deref(), Some("3.1.4"));
+        assert_eq!(workspace.repository.as_deref(), Some("https://h/o/r"));
+        assert_eq!(workspace.license.as_deref(), Some("MIT"));
+        assert_eq!(workspace.author.as_deref(), Some("A <a@b>"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absent_workspace_package_is_empty() {
+        let dir = scratch("empty");
+        fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let workspace = WorkspacePackage::read(&dir).unwrap();
+        assert!(workspace.version.is_none() && workspace.author.is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

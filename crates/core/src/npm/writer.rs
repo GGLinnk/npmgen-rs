@@ -38,6 +38,7 @@ impl TreeWriter {
 
     /// Write `text` verbatim, creating parent directories.
     pub fn write_string(&self, relative: &str, text: &str) -> Result<(), NpmError> {
+        Self::guard(relative)?;
         let path = self.root.join(relative);
         if let Some(parent) = path.parent() {
             Self::create_dir(parent)?;
@@ -52,6 +53,7 @@ impl TreeWriter {
 
     /// Copy a single file to `relative`, creating parent directories.
     pub fn copy_file(&self, from: &Path, relative: &str) -> Result<(), NpmError> {
+        Self::guard(relative)?;
         let to = self.root.join(relative);
         if let Some(parent) = to.parent() {
             Self::create_dir(parent)?;
@@ -62,6 +64,7 @@ impl TreeWriter {
     /// Copy a file or directory tree to `relative`. Returns `false` when the
     /// source is absent, letting the caller decide whether that is fatal.
     pub fn copy_path(&self, from: &Path, relative: &str) -> Result<bool, NpmError> {
+        Self::guard(relative)?;
         if !from.exists() {
             return Ok(false);
         }
@@ -71,6 +74,24 @@ impl TreeWriter {
             self.copy_file(from, relative)?;
         }
         Ok(true)
+    }
+
+    /// Reject a destination that is absolute or climbs out of the package via
+    /// `..`, so payload always lands inside the package directory.
+    fn guard(relative: &str) -> Result<(), NpmError> {
+        use std::path::Component;
+        let escapes = Path::new(relative).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        });
+        if escapes {
+            return Err(NpmError::PathEscape {
+                path: relative.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     fn create_dir(path: &Path) -> Result<(), NpmError> {
@@ -110,5 +131,62 @@ impl TreeWriter {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TreeWriter;
+    use crate::npm::NpmError;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("npmgen-writer-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn rejects_paths_that_escape_the_package() {
+        let dir = scratch("guard");
+        let writer = TreeWriter::new(dir.join("pkg"));
+        writer.ensure().unwrap();
+
+        assert!(matches!(
+            writer.write_string("../escape.json", "x").unwrap_err(),
+            NpmError::PathEscape { .. }
+        ));
+        let absolute = if cfg!(windows) {
+            "C:/escape.json"
+        } else {
+            "/escape.json"
+        };
+        assert!(matches!(
+            writer.write_string(absolute, "x").unwrap_err(),
+            NpmError::PathEscape { .. }
+        ));
+
+        writer.write_string("nested/ok.json", "x").unwrap();
+        assert!(dir.join("pkg/nested/ok.json").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copies_a_deep_directory_tree() {
+        let root = scratch("tree");
+        let src = root.join("src");
+        fs::create_dir_all(src.join("a/b")).unwrap();
+        fs::write(src.join("a/b/leaf.txt"), "leaf").unwrap();
+        fs::write(src.join("top.txt"), "top").unwrap();
+
+        let writer = TreeWriter::new(root.join("pkg"));
+        writer.ensure().unwrap();
+        assert!(writer.copy_path(&src, "payload").unwrap());
+
+        assert!(root.join("pkg/payload/a/b/leaf.txt").is_file());
+        assert!(root.join("pkg/payload/top.txt").is_file());
+        let _ = fs::remove_dir_all(&root);
     }
 }

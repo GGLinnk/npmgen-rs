@@ -25,9 +25,13 @@ pub(super) const ARCH_CPU: &[(&str, &str)] = &[
     ("s390x", "s390x"),
 ];
 
+/// Triple system token and npm os value for Windows; the binary carries `.exe`.
+pub(super) const WINDOWS_SYSTEM: &str = "windows";
+pub(super) const WINDOWS_OS: &str = "win32";
+
 /// Triple system token -> npm `process.platform` (`os`).
 pub(super) const SYSTEM_OS: &[(&str, &str)] = &[
-    ("windows", "win32"),
+    (WINDOWS_SYSTEM, WINDOWS_OS),
     ("darwin", "darwin"),
     ("linux", "linux"),
     ("freebsd", "freebsd"),

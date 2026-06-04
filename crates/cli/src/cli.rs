@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use npmgen_core::Generator;
+use npmgen_core::{DEFAULT_DRIVER, DEFAULT_MANIFEST_PATH, DEFAULT_OUT, Generator};
 
 /// Generate the npm publish tree (meta + per-platform packages) that ships a
 /// prebuilt Rust binary.
@@ -9,11 +9,11 @@ use npmgen_core::Generator;
 #[command(name = "npmgen", version, about, long_about = None)]
 pub struct Cli {
     /// Manifest of the target crate.
-    #[arg(long, env = "NPMGEN_MANIFEST_PATH", default_value = "Cargo.toml")]
+    #[arg(long, env = "NPMGEN_MANIFEST_PATH", default_value = DEFAULT_MANIFEST_PATH)]
     manifest_path: PathBuf,
 
     /// Output root for the generated tree.
-    #[arg(long, env = "NPMGEN_OUT", default_value = "dist/npm")]
+    #[arg(long, env = "NPMGEN_OUT", default_value = DEFAULT_OUT)]
     out: PathBuf,
 
     /// Workspace package to describe and build.
@@ -37,7 +37,7 @@ pub struct Cli {
     no_build: bool,
 
     /// Build driver invoked per target (e.g. cargo, cross, cargo-zigbuild).
-    #[arg(long, env = "NPMGEN_BUILDER", default_value = "cargo")]
+    #[arg(long, env = "NPMGEN_BUILDER", default_value = DEFAULT_DRIVER)]
     builder: String,
 
     /// Restrict to these target keys (repeatable or comma-separated).

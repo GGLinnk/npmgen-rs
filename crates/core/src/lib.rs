@@ -1,4 +1,3 @@
-#![forbid(unsafe_code)]
 //! Generate the npm publish tree that ships a prebuilt Rust binary.
 //!
 //! The tree follows the "platform packages" pattern: a meta package whose
@@ -19,8 +18,10 @@ pub mod npm;
 pub mod project;
 pub mod target;
 
-pub use config::Config;
+pub use config::{Config, Launcher, ManifestSpec, TargetSpec};
 pub use error::{Error, Result};
-pub use pipeline::{Generator, GeneratorBuilder};
-pub use project::{Overrides, Project};
+pub use pipeline::{
+    DEFAULT_DRIVER, DEFAULT_MANIFEST_PATH, DEFAULT_OUT, Generator, GeneratorBuilder,
+};
+pub use project::{Author, Identity, Overrides, Project};
 pub use target::Target;

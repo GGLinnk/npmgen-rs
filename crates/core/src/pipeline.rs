@@ -7,13 +7,24 @@ use std::path::PathBuf;
 
 use tracing::info;
 
-use crate::compile::Compiler;
+use crate::compile::{CargoDriver, Compiler};
 use crate::error::{Error, Result};
 use crate::npm::Assembler;
 use crate::project::{Overrides, Project};
 use crate::target::TargetResolver;
 
+/// Default target manifest when none is supplied.
+pub const DEFAULT_MANIFEST_PATH: &str = "Cargo.toml";
+/// Default output root for the generated tree.
+pub const DEFAULT_OUT: &str = "dist/npm";
+/// Default build driver command.
+pub const DEFAULT_DRIVER: &str = "cargo";
+
+/// Release-tag prefix that `--tag` is checked against (`v<version>`).
+const TAG_PREFIX: &str = "v";
+
 /// A configured generation run.
+#[derive(Debug)]
 pub struct Generator {
     manifest_path: PathBuf,
     out: PathBuf,
@@ -35,7 +46,7 @@ impl Generator {
         let project = Project::load(&self.manifest_path, &self.overrides)?;
 
         if let Some(tag) = &self.tag {
-            let expected = format!("v{}", project.version);
+            let expected = format!("{TAG_PREFIX}{}", project.version);
             if tag != &expected {
                 return Err(Error::TagMismatch {
                     tag: tag.clone(),
@@ -48,9 +59,10 @@ impl Generator {
             TargetResolver::new(&project.config, &project.workspace_root).resolve(&self.targets)?;
 
         if !self.no_build {
-            Compiler::new(self.driver.clone()).compile_all(&project, &targets)?;
+            let driver = CargoDriver::new(&self.driver);
+            Compiler::new(&driver).compile_all(&project, &targets)?;
         }
-        Assembler::new(&project, &targets, &self.out, !self.no_build).assemble()?;
+        Assembler::new(&project, &targets, &self.out).assemble()?;
 
         info!(
             package = %project.package_name(),
@@ -79,11 +91,11 @@ pub struct GeneratorBuilder {
 impl Default for GeneratorBuilder {
     fn default() -> Self {
         Self {
-            manifest_path: PathBuf::from("Cargo.toml"),
-            out: PathBuf::from("dist/npm"),
+            manifest_path: PathBuf::from(DEFAULT_MANIFEST_PATH),
+            out: PathBuf::from(DEFAULT_OUT),
             tag: None,
             no_build: false,
-            driver: "cargo".to_owned(),
+            driver: DEFAULT_DRIVER.to_owned(),
             targets: Vec::new(),
             overrides: Overrides::default(),
         }
@@ -122,8 +134,14 @@ impl GeneratorBuilder {
     }
 
     /// Restrict generation to these target keys; empty means all resolved.
-    pub fn targets(mut self, targets: Vec<String>) -> Self {
-        self.targets = targets;
+    pub fn targets(mut self, targets: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.targets = targets.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Supply all identity overrides at once (alternative to the per-field setters).
+    pub fn overrides(mut self, overrides: Overrides) -> Self {
+        self.overrides = overrides;
         self
     }
 

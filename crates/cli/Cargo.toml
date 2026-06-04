@@ -19,6 +19,9 @@ path = "src/bin/npmgen.rs"
 name = "cargo-npmgen"
 path = "src/bin/cargo-npmgen.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 npmgen-core = { workspace = true }
 clap = { workspace = true }
