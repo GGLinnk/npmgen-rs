@@ -50,7 +50,7 @@ impl<'a> MetaPackage<'a> {
         if let Some(launcher) = &self.project.config.launcher
             && let Some(bin) = launcher.bin()
         {
-            object.insert("bin".to_owned(), json!({ bin: launcher.file() }));
+            object.insert("bin".to_owned(), json!({ bin: launcher.output() }));
         }
 
         for (key, value) in &self.project.config.extra {
@@ -64,7 +64,7 @@ impl<'a> MetaPackage<'a> {
     fn files(&self) -> Vec<String> {
         let mut entries = BTreeSet::new();
         if let Some(launcher) = &self.project.config.launcher {
-            entries.insert(Self::top_segment(launcher.file()));
+            entries.insert(Self::top_segment(launcher.output()));
         }
         for include in &self.project.config.include {
             entries.insert(Self::top_segment(include));

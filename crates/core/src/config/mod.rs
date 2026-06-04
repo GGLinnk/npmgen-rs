@@ -98,10 +98,21 @@ mod tests {
         });
         let config = Config::from_metadata(&value).unwrap();
         let launcher = config.launcher.unwrap();
-        assert_eq!(launcher.file(), "launch.mjs");
+        assert_eq!(launcher.output(), "launch.mjs");
         assert_eq!(launcher.bin(), None);
+        assert!(!launcher.is_generated());
         assert_eq!(config.manifests[0].src(), "tmpl/plugin.json");
         assert_eq!(config.manifests[0].dest(), ".claude-plugin/plugin.json");
+    }
+
+    #[test]
+    fn launcher_without_a_file_is_generated() {
+        let value = json!({ "launcher": { "bin": "mytool", "fail_open": true } });
+        let launcher = Config::from_metadata(&value).unwrap().launcher.unwrap();
+        assert!(launcher.is_generated());
+        assert_eq!(launcher.bin(), Some("mytool"));
+        assert!(launcher.fail_open());
+        assert_eq!(launcher.output(), "launch.mjs");
     }
 
     #[test]

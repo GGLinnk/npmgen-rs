@@ -6,6 +6,7 @@
 //! tree. Each platform's binary is copied out of cargo's target directory;
 //! platforms whose binary is not yet present are reported in one summary.
 
+mod launcher;
 mod meta;
 mod platform;
 mod substitute;
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
+use launcher::LauncherScript;
 use meta::MetaPackage;
 use platform::PlatformPackage;
 use substitute::{ManifestRenderer, RenderedManifest};
@@ -83,10 +85,13 @@ impl<'a> Assembler<'a> {
         }
 
         if let Some(launcher) = &self.project.config.launcher {
-            writer.copy_file(
-                &self.project.workspace_root.join(launcher.file()),
-                launcher.file(),
-            )?;
+            let dest = launcher.output();
+            if launcher.is_generated() {
+                let script = LauncherScript::new(launcher.fail_open()).render();
+                writer.write_string(dest, &script)?;
+            } else {
+                writer.copy_file(&self.project.workspace_root.join(dest), dest)?;
+            }
         }
 
         for include in &self.project.config.include {
