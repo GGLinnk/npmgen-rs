@@ -6,35 +6,47 @@ It generates the npm publish tree that ships a prebuilt Rust binary.
 The tree is a meta package plus one package per platform, wired through `optionalDependencies` and npm `os`/`cpu` filters.
 The `npmgen` command-line tool is a thin wrapper over this crate.
 
-## Usage
-
 Add it as a dependency:
 
 ```
 cargo add npmgen-core
 ```
 
-Drive a generation through the builder:
+## Two ways in
+
+Acquiring the inputs and generating are separate concerns.
+A `Generator` runs over a resolved `Project`; how you obtain that `Project` is up to you.
+
+Load it from a crate manifest (uses `cargo metadata` and TOML):
 
 ```rust
-use npmgen_core::Generator;
+use npmgen_core::{Generator, Overrides, Project};
 
-Generator::builder()
-    .manifest_path("Cargo.toml")
-    .out("dist/npm")
-    .no_build(true)
-    .build()
-    .run()?;
+let project = Project::load("Cargo.toml".as_ref(), &Overrides::default())?;
+Generator::new(&project).out("dist/npm").run()?;
 ```
 
-Package identity is read from the target crate with `cargo metadata`.
-Targets, payload, and foreign manifests come from `[package.metadata.npmgen]`, documented in the [main README](https://github.com/GGLinnk/npmgen-rs#configuration).
+Or build it in memory, with no manifest, no `cargo metadata`, and no TOML parsing:
+
+```rust
+use npmgen_core::{Config, Generator, Project};
+
+let project = Project::builder("@me", "mytool", "1.2.3")
+    .git_url("git+https://github.com/me/mytool.git")
+    .config(Config::default())
+    .workspace_root("/path/to/project")
+    .target_directory("/path/to/target")
+    .build();
+Generator::new(&project).out("dist/npm").run()?;
+```
+
+Targets, payload, and foreign manifests live in `Config`, documented as `[package.metadata.npmgen]` in the [main README](https://github.com/GGLinnk/npmgen-rs#configuration).
 
 ## Key types
 
-- `Generator` builds and runs a generation; `GeneratorBuilder` configures it.
-- `Project` is the resolved target crate; `Config` is its npmgen metadata.
-- `Target` is one resolved platform; `TargetResolver` derives the set.
+- `Generator` configures and runs a generation over a `Project`.
+- `Project` is the resolved target crate; build it with `Project::builder` or `Project::load`.
+- `Config` is the npmgen metadata; `Target` is one resolved platform.
 - `BuildDriver` is the build seam, with `CargoDriver` as the default.
 
 ## License
