@@ -267,3 +267,45 @@ fn generates_from_an_in_memory_project_without_a_manifest() {
     assert_eq!(meta["files"], json!(["launch.mjs"]));
     assert!(out.join("intool/launch.mjs").is_file());
 }
+
+#[test]
+fn generates_a_launcher_and_wires_the_bin() {
+    let source = out_dir("gen-launcher-src");
+    fs::create_dir_all(&source).unwrap();
+
+    let config = Config {
+        launcher: Some(Launcher::Generated {
+            bin: Some("intool".to_owned()),
+            fail_open: false,
+        }),
+        targets: vec![TargetSpec {
+            key: "linux-x64".to_owned(),
+            triple: None,
+            os: None,
+            cpu: None,
+        }],
+        ..Config::default()
+    };
+    let project = Project::builder("@acme", "intool", "3.0.0")
+        .config(config)
+        .workspace_root(source.clone())
+        .target_directory(source.join("target"))
+        .build();
+
+    let out = out_dir("gen-launcher-out");
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+
+    let launcher = out.join("intool/launch.mjs");
+    assert!(launcher.is_file(), "launcher was generated");
+    let script = fs::read_to_string(&launcher).unwrap();
+    assert!(script.contains("spawnSync"));
+    assert!(script.contains("process.exit(1);"), "fail-hard by default");
+
+    let meta = read_json(&out.join("intool/package.json"));
+    assert_eq!(meta["bin"], json!({ "intool": "launch.mjs" }));
+    assert_eq!(meta["files"], json!(["launch.mjs"]));
+}
