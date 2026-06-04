@@ -9,6 +9,7 @@ license = "MIT"
 description = "Generate the npm publish tree (meta + per-platform packages) that ships a prebuilt Rust binary."
 repository = "https://github.com/GGLinnk/npmgen-rs"
 authors = ["Gabriel GRONDIN <gglinnk@protonmail.com>"]
+readme = "README.md"
 
 [workspace.dependencies]
 cargo_metadata = "0.23"
