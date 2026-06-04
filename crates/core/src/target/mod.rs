@@ -33,8 +33,11 @@ impl Target {
         let cpu = Self::cpu_for_arch(arch).ok_or_else(|| TargetError::UnknownTriple {
             triple: triple.to_owned(),
         })?;
+        // Match the right-most system token: Rust triples place the OS after the
+        // kernel, so `aarch64-linux-android` is android, not linux.
         let (system, os) = segments
             .iter()
+            .rev()
             .find_map(|segment| Self::os_for_system(segment).map(|os| (*segment, os)))
             .ok_or_else(|| TargetError::UnknownTriple {
                 triple: triple.to_owned(),
@@ -181,6 +184,12 @@ mod tests {
 
         let linux = Target::from_triple("x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(linux.key, "linux-x64");
+
+        // Two system tokens: the rightmost (android) wins over linux.
+        let android = Target::from_triple("aarch64-linux-android").unwrap();
+        assert_eq!(android.key, "android-arm64");
+        assert_eq!(android.os, "android");
+        assert!(!android.windows);
     }
 
     #[test]
