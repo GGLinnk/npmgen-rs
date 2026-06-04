@@ -122,6 +122,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_unknown_launcher_key() {
+        // A typo on `file` must error, not silently ship a generated launcher.
+        let value = json!({ "launcher": { "fial": "launch.mjs" } });
+        assert!(Config::from_metadata(&value).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         let value = json!({ "nonsense": true });
         assert!(Config::from_metadata(&value).is_err());

@@ -62,6 +62,7 @@ impl Launcher {
 }
 
 /// Wire form: a bare path string, or a table with optional file/bin/fail_open.
+/// Unknown keys are captured in `extra` so a typo is rejected, not ignored.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum LauncherConfig {
@@ -73,6 +74,8 @@ enum LauncherConfig {
         bin: Option<String>,
         #[serde(default)]
         fail_open: Option<bool>,
+        #[serde(flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
     },
 }
 
@@ -86,7 +89,11 @@ impl TryFrom<LauncherConfig> for Launcher {
                 file,
                 bin,
                 fail_open,
+                extra,
             } => {
+                if let Some(unknown) = extra.keys().next() {
+                    return Err(format!("unknown launcher field `{unknown}`"));
+                }
                 if file.is_some() && fail_open == Some(true) {
                     return Err(
                         "`fail_open` only applies to a generated launcher; omit `file` to generate one"
