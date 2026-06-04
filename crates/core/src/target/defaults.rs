@@ -36,6 +36,5 @@ pub(super) const SYSTEM_OS: &[(&str, &str)] = &[
     ("linux", "linux"),
     ("freebsd", "freebsd"),
     ("openbsd", "openbsd"),
-    ("netbsd", "netbsd"),
     ("android", "android"),
 ];

@@ -9,6 +9,9 @@ use tracing_subscriber::EnvFilter;
 
 use cli::Cli;
 
+/// Default log filter when `RUST_LOG` is unset.
+const DEFAULT_LOG_FILTER: &str = "info";
+
 /// Parse arguments and run a generation. Both binaries delegate here, so
 /// `npmgen …`, `cargo-npmgen …`, and `cargo npmgen …` behave identically.
 pub fn main() {
@@ -21,9 +24,12 @@ pub fn main() {
 }
 
 fn init_tracing() {
+    // RUST_LOG is tracing's own observability convention, not application config,
+    // so it is read here rather than routed through the clap argument surface.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
         )
         .with_target(false)
         .init();

@@ -17,10 +17,11 @@ impl Identity {
         repository: &str,
         scope_override: Option<&str>,
     ) -> Result<Self, ProjectError> {
-        let path = repository
-            .trim()
-            .trim_end_matches('/')
-            .trim_end_matches(".git");
+        // Strip at most one trailing `/` then one `.git`, so a repository whose
+        // name legitimately ends in `.git` is not over-trimmed.
+        let trimmed = repository.trim();
+        let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
+        let path = trimmed.strip_suffix(".git").unwrap_or(trimmed);
         let mut segments = path.rsplit('/');
         let name = segments.next().unwrap_or_default();
         let owner = segments.next().unwrap_or_default();

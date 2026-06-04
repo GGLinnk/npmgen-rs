@@ -61,10 +61,11 @@ impl<'a> TargetResolver<'a> {
     }
 
     /// First `[build] target` walking `.cargo/config.toml` from the workspace
-    /// root upward, the way cargo merges configuration. The home-level
-    /// (`$CARGO_HOME`) config is not consulted: a global default target is an
-    /// unusual choice for a publish tool, and reading it would route a config
-    /// knob outside the project tree.
+    /// root upward, the way cargo merges configuration. Neither the home-level
+    /// (`$CARGO_HOME`) config nor the `CARGO_BUILD_TARGET` env var is consulted:
+    /// a global default target is an unusual choice for a publish tool, and
+    /// reading either would route a config knob outside the project tree (the
+    /// crate reads no env vars outside clap). Pass `--target` to override.
     fn cargo_targets(&self) -> Result<Option<Vec<String>>, TargetError> {
         for dir in self.workspace_root.ancestors() {
             let cargo_dir = dir.join(CARGO_CONFIG_DIR);

@@ -7,7 +7,8 @@
 //! and foreign manifests are declared under `[package.metadata.npmgen]` (or
 //! `[workspace.metadata.npmgen]`).
 //!
-//! Entry point: [`Generator::builder`].
+//! Obtain a [`Project`] with [`Project::builder`] (in-memory) or [`Project::load`]
+//! (from a manifest), then run [`Generator::new`].
 
 mod error;
 mod pipeline;
@@ -18,8 +19,12 @@ pub mod npm;
 pub mod project;
 pub mod target;
 
-pub use config::{Config, Launcher, ManifestSpec, TargetSpec};
+pub use compile::{BuildDriver, CargoDriver, CompileError};
+pub use config::{Config, ConfigError, Launcher, ManifestSpec, TargetSpec};
 pub use error::{Error, Result};
+pub use npm::NpmError;
 pub use pipeline::{DEFAULT_DRIVER, DEFAULT_OUT, Generator};
-pub use project::{Author, DEFAULT_MANIFEST_PATH, Identity, Overrides, Project, ProjectBuilder};
-pub use target::Target;
+pub use project::{
+    Author, DEFAULT_MANIFEST_PATH, Identity, Overrides, Project, ProjectBuilder, ProjectError,
+};
+pub use target::{Target, TargetError};
