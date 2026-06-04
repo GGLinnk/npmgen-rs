@@ -50,17 +50,30 @@ impl<'a> Assembler<'a> {
         }
     }
 
-    /// Build the tree in staging and atomically swap it onto `out`.
+    /// Build the tree in staging and atomically swap it onto `out`. On any
+    /// failure the staging directory is removed rather than left behind.
     pub fn assemble(&self) -> Result<(), NpmError> {
-        let staging = self.staging_dir();
+        let staging = self.staging_dir()?;
         Self::reset(&staging)?;
-        self.assemble_meta(&staging)?;
-        let missing = self.assemble_platforms(&staging)?;
-        self.swap(&staging)?;
+        match self.assemble_into(&staging) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = Self::reset(&staging);
+                Err(error)
+            }
+        }
+    }
+
+    fn assemble_into(&self, staging: &Path) -> Result<(), NpmError> {
+        self.assemble_meta(staging)?;
+        let missing = self.assemble_platforms(staging)?;
+        self.swap(staging)?;
 
         if !missing.is_empty() {
             warn!(
-                targets = ?missing,
+                placed = self.targets.len() - missing.len(),
+                total = self.targets.len(),
+                missing = ?missing,
                 "platform packages have no binary yet; place them before publishing",
             );
         }
@@ -124,11 +137,20 @@ impl<'a> Assembler<'a> {
         Ok(missing)
     }
 
-    /// Sibling of `out`, on the same filesystem so the swap is a cheap rename.
-    fn staging_dir(&self) -> PathBuf {
-        let mut name = self.out.as_os_str().to_owned();
-        name.push(STAGING_SUFFIX);
-        PathBuf::from(name)
+    /// A genuine sibling of `out` (same parent, so the swap is a cheap rename),
+    /// suffixed with the process id so concurrent runs do not collide. Errors
+    /// when `out` has no final component (`.`, `..`, a root), which would make
+    /// the pre-swap reset delete the wrong directory.
+    fn staging_dir(&self) -> Result<PathBuf, NpmError> {
+        let file_name = self.out.file_name().ok_or_else(|| NpmError::InvalidOut {
+            path: self.out.to_path_buf(),
+        })?;
+        let mut staged = file_name.to_os_string();
+        staged.push(format!("{STAGING_SUFFIX}{}", std::process::id()));
+        Ok(match self.out.parent() {
+            Some(parent) => parent.join(staged),
+            None => PathBuf::from(staged),
+        })
     }
 
     fn swap(&self, staging: &Path) -> Result<(), NpmError> {
@@ -208,6 +230,9 @@ pub enum NpmError {
 
     #[error("payload path {path:?} escapes the package directory")]
     PathEscape { path: String },
+
+    #[error("output path {} has no final component to write into (e.g. \".\" or a root)", path.display())]
+    InvalidOut { path: PathBuf },
 
     #[error("serializing JSON for {}", path.display())]
     Serialize {
