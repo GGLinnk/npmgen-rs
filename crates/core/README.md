@@ -36,7 +36,7 @@ let project = Project::builder("@me", "mytool", "1.2.3")
     .config(Config::default())
     .workspace_root("/path/to/project")
     .target_directory("/path/to/target")
-    .build();
+    .build()?;
 Generator::new(&project).out("dist/npm").run()?;
 ```
 
