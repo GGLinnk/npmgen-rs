@@ -78,6 +78,12 @@ pub enum ProjectError {
     #[error("no version found; set it in Cargo.toml or pass --pkg-version")]
     MissingVersion,
 
+    #[error("invalid project field {field}: {reason}")]
+    InvalidField {
+        field: &'static str,
+        reason: &'static str,
+    },
+
     #[error("reading manifest {}", path.display())]
     ReadManifest {
         path: PathBuf,

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{Author, Identity, Project};
+use super::{Author, Identity, Project, ProjectError};
 use crate::config::Config;
 
 /// Programmatic, dependency-free construction of a [`Project`].
@@ -107,12 +107,32 @@ impl ProjectBuilder {
         self
     }
 
-    pub fn build(self) -> Project {
+    /// Validate the required fields and assemble the [`Project`].
+    pub fn build(self) -> Result<Project, ProjectError> {
+        if self.scope.is_empty() || !self.scope.starts_with('@') {
+            return Err(ProjectError::InvalidField {
+                field: "scope",
+                reason: "must be a non-empty npm scope starting with '@'",
+            });
+        }
+        if self.name.is_empty() {
+            return Err(ProjectError::InvalidField {
+                field: "name",
+                reason: "must not be empty",
+            });
+        }
+        if self.version.is_empty() {
+            return Err(ProjectError::InvalidField {
+                field: "version",
+                reason: "must not be empty",
+            });
+        }
+
         let bin = self
             .bin
             .or_else(|| self.config.bin.clone())
             .unwrap_or_else(|| self.name.clone());
-        Project {
+        Ok(Project {
             identity: Identity {
                 scope: self.scope,
                 name: self.name,
@@ -128,7 +148,7 @@ impl ProjectBuilder {
             config: self.config,
             workspace_root: self.workspace_root,
             target_directory: self.target_directory,
-        }
+        })
     }
 }
 
@@ -140,7 +160,8 @@ mod tests {
     fn builds_identity_and_defaults_bin_to_name() {
         let project = ProjectBuilder::new("@me", "tool", "1.2.3")
             .git_url("git+https://example.test/me/tool.git")
-            .build();
+            .build()
+            .unwrap();
         assert_eq!(project.package_name(), "@me/tool");
         assert_eq!(project.version, "1.2.3");
         assert_eq!(project.bin, "tool");
@@ -154,7 +175,17 @@ mod tests {
     fn explicit_bin_overrides_the_name_default() {
         let project = ProjectBuilder::new("@me", "tool", "1.2.3")
             .bin("other")
-            .build();
+            .build()
+            .unwrap();
         assert_eq!(project.bin, "other");
+    }
+
+    #[test]
+    fn rejects_empty_or_unscoped_required_fields() {
+        assert!(ProjectBuilder::new("", "tool", "1.0.0").build().is_err());
+        assert!(ProjectBuilder::new("me", "tool", "1.0.0").build().is_err());
+        assert!(ProjectBuilder::new("@me", "", "1.0.0").build().is_err());
+        assert!(ProjectBuilder::new("@me", "tool", "").build().is_err());
+        assert!(ProjectBuilder::new("@me", "tool", "1.0.0").build().is_ok());
     }
 }

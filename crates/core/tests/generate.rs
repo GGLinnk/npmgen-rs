@@ -6,8 +6,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use npmgen_core::project::ProjectError;
-use npmgen_core::{Config, Error, Generator, Launcher, Overrides, Project, TargetSpec};
+use npmgen_core::{
+    Config, Error, Generator, Launcher, ManifestSpec, NpmError, Overrides, Project, TargetSpec,
+};
 use serde_json::{Value, json};
+
+fn target_spec(key: &str) -> TargetSpec {
+    TargetSpec {
+        key: key.to_owned(),
+        triple: None,
+        os: None,
+        cpu: None,
+    }
+}
 
 const DESCRIPTION: &str = "PreToolUse Bash hook that redirects discouraged shell commands to Claude's dedicated tools and to configured MCP servers.";
 
@@ -233,7 +244,7 @@ fn generates_from_an_in_memory_project_without_a_manifest() {
     fs::write(source.join("launch.mjs"), "process.exit(0);\n").unwrap();
 
     let config = Config {
-        launcher: Some(Launcher::File("launch.mjs".to_owned())),
+        launcher: Some(Launcher::copied("launch.mjs", None)),
         targets: vec![TargetSpec {
             key: "linux-x64".to_owned(),
             triple: None,
@@ -248,7 +259,8 @@ fn generates_from_an_in_memory_project_without_a_manifest() {
         .config(config)
         .workspace_root(source.clone())
         .target_directory(source.join("target"))
-        .build();
+        .build()
+        .unwrap();
 
     let out = out_dir("in-memory-out");
     Generator::new(&project)
@@ -274,10 +286,7 @@ fn generates_a_launcher_and_wires_the_bin() {
     fs::create_dir_all(&source).unwrap();
 
     let config = Config {
-        launcher: Some(Launcher::Generated {
-            bin: Some("intool".to_owned()),
-            fail_open: false,
-        }),
+        launcher: Some(Launcher::generated(Some("intool".to_owned()), false)),
         targets: vec![TargetSpec {
             key: "linux-x64".to_owned(),
             triple: None,
@@ -290,7 +299,8 @@ fn generates_a_launcher_and_wires_the_bin() {
         .config(config)
         .workspace_root(source.clone())
         .target_directory(source.join("target"))
-        .build();
+        .build()
+        .unwrap();
 
     let out = out_dir("gen-launcher-out");
     Generator::new(&project)
@@ -308,4 +318,122 @@ fn generates_a_launcher_and_wires_the_bin() {
     let meta = read_json(&out.join("intool/package.json"));
     assert_eq!(meta["bin"], json!({ "intool": "launch.mjs" }));
     assert_eq!(meta["files"], json!(["launch.mjs"]));
+}
+
+#[test]
+fn rerun_into_same_out_removes_orphans_and_leaves_no_staging() {
+    let project = load_fixture();
+    let out = out_dir("rerun");
+
+    // First run: the default six platforms.
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+    assert!(out.join("nocmd-darwin-x64/package.json").is_file());
+
+    // Second run into the same out, narrowed to one platform.
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .targets(["linux-x64"])
+        .run()
+        .unwrap();
+    assert!(out.join("nocmd-linux-x64/package.json").is_file());
+    assert!(
+        !out.join("nocmd-darwin-x64").exists(),
+        "orphan platform dir from the first run was removed"
+    );
+
+    let leftover_staging = fs::read_dir(out.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("rerun.npmgen-staging")
+        });
+    assert!(!leftover_staging, "no staging directory was left behind");
+}
+
+#[test]
+fn out_with_no_final_component_is_rejected_before_any_deletion() {
+    let project = load_fixture();
+    let error = Generator::new(&project)
+        .out(".")
+        .no_build(true)
+        .run()
+        .unwrap_err();
+    assert!(matches!(error, Error::Npm(inner) if matches!(*inner, NpmError::InvalidOut { .. })));
+}
+
+#[test]
+fn renders_a_toml_foreign_manifest_end_to_end() {
+    let source = out_dir("toml-src");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(
+        source.join("meta.toml"),
+        "name = \"${name}\"\nversion = \"${version}\"\n",
+    )
+    .unwrap();
+
+    let config = Config {
+        manifests: vec![ManifestSpec::Path("meta.toml".to_owned())],
+        targets: vec![target_spec("linux-x64")],
+        ..Config::default()
+    };
+    let project = Project::builder("@acme", "tt", "4.5.6")
+        .config(config)
+        .workspace_root(source.clone())
+        .target_directory(source.join("target"))
+        .build()
+        .unwrap();
+
+    let out = out_dir("toml-out");
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+
+    let rendered = fs::read_to_string(out.join("tt/meta.toml")).unwrap();
+    assert!(rendered.contains("name = \"tt\""));
+    assert!(rendered.contains("version = \"4.5.6\""));
+    assert!(rendered.ends_with('\n'));
+}
+
+#[test]
+fn generates_a_fail_open_launcher_without_a_bin() {
+    let source = out_dir("failopen-src");
+    fs::create_dir_all(&source).unwrap();
+    let config = Config {
+        launcher: Some(Launcher::generated(None, true)),
+        targets: vec![target_spec("linux-x64")],
+        ..Config::default()
+    };
+    let project = Project::builder("@acme", "hook", "1.0.0")
+        .config(config)
+        .workspace_root(source.clone())
+        .target_directory(source.join("target"))
+        .build()
+        .unwrap();
+
+    let out = out_dir("failopen-out");
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+
+    let script = fs::read_to_string(out.join("hook/launch.mjs")).unwrap();
+    assert!(script.contains("process.exit(0);"));
+    assert!(!script.contains("process.exit(1);"));
+
+    let meta = read_json(&out.join("hook/package.json"));
+    assert!(
+        meta.get("bin").is_none(),
+        "no bin wired when launcher has none"
+    );
 }

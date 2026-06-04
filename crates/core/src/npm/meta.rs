@@ -50,7 +50,10 @@ impl<'a> MetaPackage<'a> {
         if let Some(launcher) = &self.project.config.launcher
             && let Some(bin) = launcher.bin()
         {
-            object.insert("bin".to_owned(), json!({ bin: launcher.output() }));
+            object.insert(
+                "bin".to_owned(),
+                json!({ bin: Self::posix(launcher.output()) }),
+            );
         }
 
         for (key, value) in &self.project.config.extra {
@@ -78,6 +81,12 @@ impl<'a> MetaPackage<'a> {
     fn top_segment(path: &str) -> String {
         path.split(['/', '\\']).next().unwrap_or(path).to_owned()
     }
+
+    /// npm `bin`/`files` paths must be POSIX, so a backslash-authored config
+    /// value does not leak a Windows separator into the published manifest.
+    fn posix(path: &str) -> String {
+        path.replace('\\', "/")
+    }
 }
 
 #[cfg(test)]
@@ -91,10 +100,7 @@ mod tests {
     #[test]
     fn wires_launcher_bin_and_merges_extra_over_computed_fields() {
         let mut project = sample_project();
-        project.config.launcher = Some(Launcher::Detailed {
-            file: "launch.mjs".to_owned(),
-            bin: Some("mytool".to_owned()),
-        });
+        project.config.launcher = Some(Launcher::copied("launch.mjs", Some("mytool".to_owned())));
         project
             .config
             .extra
@@ -120,7 +126,7 @@ mod tests {
     #[test]
     fn omits_bin_when_launcher_declares_none() {
         let mut project = sample_project();
-        project.config.launcher = Some(Launcher::File("launch.mjs".to_owned()));
+        project.config.launcher = Some(Launcher::copied("launch.mjs", None));
         let value = MetaPackage::new(&project, &[]).to_value();
         assert!(value.get("bin").is_none());
         assert_eq!(value["files"], json!(["launch.mjs"]));

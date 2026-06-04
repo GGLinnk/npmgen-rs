@@ -116,6 +116,12 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fail_open_on_a_copied_launcher() {
+        let value = json!({ "launcher": { "file": "launch.mjs", "fail_open": true } });
+        assert!(Config::from_metadata(&value).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         let value = json!({ "nonsense": true });
         assert!(Config::from_metadata(&value).is_err());
