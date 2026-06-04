@@ -58,8 +58,11 @@ manifests = [".claude-plugin/plugin.json"]
 ```
 
 `include` copies files and folders verbatim.
-`launcher` bundles a JavaScript entry and can wire it as the npm `bin`.
 `manifests` renders foreign manifests, described next.
+
+`launcher` provides the JS shim that resolves and runs the platform binary, and can wire it as the npm `bin`.
+Name a `file` to copy your own, or omit it to have npmgen generate the standard one: `launcher = { bin = "mytool" }`.
+A generated launcher exits non-zero when no platform binary is installed; set `fail_open = true` for hooks that must not block.
 
 ## Foreign manifests
 
