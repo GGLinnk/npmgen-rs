@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use npmgen_core::{DEFAULT_DRIVER, DEFAULT_MANIFEST_PATH, DEFAULT_OUT, Generator};
+use npmgen_core::{
+    DEFAULT_DRIVER, DEFAULT_MANIFEST_PATH, DEFAULT_OUT, Generator, Overrides, Project, Result,
+};
 
 /// Generate the npm publish tree (meta + per-platform packages) that ships a
 /// prebuilt Rust binary.
@@ -46,26 +48,24 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Build the configured [`Generator`] from parsed arguments.
-    pub fn into_generator(self) -> Generator {
-        let mut builder = Generator::builder()
-            .manifest_path(self.manifest_path)
+    /// Load the target crate, then generate. Loading (the cargo/TOML adapter) and
+    /// generation are composed here; the library exposes them separately.
+    pub fn run(self) -> Result<()> {
+        let overrides = Overrides {
+            package: self.package,
+            bin: self.bin,
+            version: self.pkg_version,
+        };
+        let project = Project::load(&self.manifest_path, &overrides)?;
+
+        let mut generator = Generator::new(&project)
             .out(self.out)
             .no_build(self.no_build)
             .driver(self.builder)
             .targets(self.targets);
-        if let Some(package) = self.package {
-            builder = builder.package(package);
-        }
-        if let Some(bin) = self.bin {
-            builder = builder.bin(bin);
-        }
-        if let Some(version) = self.pkg_version {
-            builder = builder.version(version);
-        }
         if let Some(tag) = self.tag {
-            builder = builder.tag(tag);
+            generator = generator.tag(tag);
         }
-        builder.build()
+        generator.run()
     }
 }

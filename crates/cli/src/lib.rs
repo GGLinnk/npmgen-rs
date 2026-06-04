@@ -14,7 +14,7 @@ use cli::Cli;
 pub fn main() {
     init_tracing();
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args_os()));
-    if let Err(error) = cli.into_generator().run() {
+    if let Err(error) = cli.run() {
         tracing::error!(%error, "npmgen failed");
         std::process::exit(1);
     }

@@ -1,12 +1,12 @@
-//! End-to-end checks: generating from fixtures whose identity mirrors real
-//! projects must reproduce the expected publish tree, and the identity/override
-//! paths must behave as documented.
+//! End-to-end checks: generating from fixtures must reproduce the expected
+//! publish tree, the identity/override paths must behave as documented, and the
+//! engine must run from an in-memory project with no manifest or TOML parsing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use npmgen_core::project::ProjectError;
-use npmgen_core::{Error, Generator, Overrides, Project};
+use npmgen_core::{Config, Error, Generator, Launcher, Overrides, Project, TargetSpec};
 use serde_json::{Value, json};
 
 const DESCRIPTION: &str = "PreToolUse Bash hook that redirects discouraged shell commands to Claude's dedicated tools and to configured MCP servers.";
@@ -26,13 +26,15 @@ fn read_json(path: &Path) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|_| panic!("invalid json {}", path.display()))
 }
 
+fn load_fixture() -> Project {
+    Project::load(&fixture_manifest(), &Overrides::default()).expect("fixture loads")
+}
+
 fn generate(slot: &str) -> PathBuf {
     let out = out_dir(slot);
-    Generator::builder()
-        .manifest_path(fixture_manifest())
+    Generator::new(&load_fixture())
         .out(&out)
         .no_build(true)
-        .build()
         .run()
         .expect("generation succeeds");
     out
@@ -128,13 +130,18 @@ fn verbatim_payload_is_copied() {
 
 #[test]
 fn version_override_propagates_to_meta_and_platform_pins() {
+    let project = Project::load(
+        &fixture_manifest(),
+        &Overrides {
+            version: Some("9.9.9".to_owned()),
+            ..Overrides::default()
+        },
+    )
+    .unwrap();
     let out = out_dir("version-override");
-    Generator::builder()
-        .manifest_path(fixture_manifest())
+    Generator::new(&project)
         .out(&out)
         .no_build(true)
-        .version("9.9.9")
-        .build()
         .run()
         .unwrap();
 
@@ -152,22 +159,18 @@ fn version_override_propagates_to_meta_and_platform_pins() {
 
 #[test]
 fn matching_tag_succeeds_and_mismatch_errors() {
-    let out = out_dir("tag");
-    Generator::builder()
-        .manifest_path(fixture_manifest())
-        .out(&out)
+    let project = load_fixture();
+    Generator::new(&project)
+        .out(out_dir("tag"))
         .no_build(true)
         .tag("v0.1.1")
-        .build()
         .run()
         .expect("matching tag");
 
-    let error = Generator::builder()
-        .manifest_path(fixture_manifest())
+    let error = Generator::new(&project)
         .out(out_dir("tag-mismatch"))
         .no_build(true)
         .tag("v9.9.9")
-        .build()
         .run()
         .unwrap_err();
     assert!(matches!(error, Error::TagMismatch { .. }));
@@ -186,16 +189,6 @@ fn overrides_select_package_and_bin() {
     assert_eq!(bin.bin, "other");
     assert_eq!(bin.package.as_deref(), Some("fixture"));
 
-    let selected = Project::load(
-        &fixture_manifest(),
-        &Overrides {
-            package: Some("fixture".to_owned()),
-            ..Overrides::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(selected.package.as_deref(), Some("fixture"));
-
     let error = Project::load(
         &fixture_manifest(),
         &Overrides {
@@ -210,12 +203,11 @@ fn overrides_select_package_and_bin() {
 #[test]
 fn virtual_workspace_uses_workspace_package_identity() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture_workspace/Cargo.toml");
+    let project = Project::load(&manifest, &Overrides::default()).unwrap();
     let out = out_dir("virtual");
-    Generator::builder()
-        .manifest_path(&manifest)
+    Generator::new(&project)
         .out(&out)
         .no_build(true)
-        .build()
         .run()
         .unwrap();
 
@@ -231,4 +223,47 @@ fn virtual_workspace_uses_workspace_package_identity() {
         plugin["author"],
         json!({ "name": "Acme Dev", "email": "dev@acme.test" })
     );
+}
+
+#[test]
+fn generates_from_an_in_memory_project_without_a_manifest() {
+    // A source root with no Cargo.toml, just the launcher payload.
+    let source = out_dir("in-memory-src");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("launch.mjs"), "process.exit(0);\n").unwrap();
+
+    let config = Config {
+        launcher: Some(Launcher::File("launch.mjs".to_owned())),
+        targets: vec![TargetSpec {
+            key: "linux-x64".to_owned(),
+            triple: None,
+            os: None,
+            cpu: None,
+        }],
+        ..Config::default()
+    };
+    // No Cargo.toml, no cargo metadata, no TOML parsing, explicit targets.
+    let project = Project::builder("@acme", "intool", "3.0.0")
+        .git_url("git+https://github.com/acme/intool.git")
+        .config(config)
+        .workspace_root(source.clone())
+        .target_directory(source.join("target"))
+        .build();
+
+    let out = out_dir("in-memory-out");
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+
+    let meta = read_json(&out.join("intool/package.json"));
+    assert_eq!(meta["name"], json!("@acme/intool"));
+    assert_eq!(meta["version"], json!("3.0.0"));
+    assert_eq!(
+        meta["optionalDependencies"],
+        json!({ "@acme/intool-linux-x64": "3.0.0" })
+    );
+    assert_eq!(meta["files"], json!(["launch.mjs"]));
+    assert!(out.join("intool/launch.mjs").is_file());
 }

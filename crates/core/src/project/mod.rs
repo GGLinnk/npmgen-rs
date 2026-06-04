@@ -8,9 +8,11 @@
 //! `[workspace.metadata.npmgen]`.
 
 mod author;
+mod builder;
 mod identity;
 
 pub use author::Author;
+pub use builder::ProjectBuilder;
 pub use identity::Identity;
 
 use std::collections::BTreeMap;
@@ -20,6 +22,9 @@ use std::path::{Path, PathBuf};
 use cargo_metadata::{MetadataCommand, Package};
 
 use crate::config::Config;
+
+/// Default manifest path for [`Project::load`].
+pub const DEFAULT_MANIFEST_PATH: &str = "Cargo.toml";
 
 /// Metadata table key under `[package.metadata.*]` / `[workspace.metadata.*]`.
 const METADATA_KEY: &str = "npmgen";
@@ -61,7 +66,7 @@ pub enum ProjectError {
     #[error("running `cargo metadata`")]
     Metadata {
         #[source]
-        source: cargo_metadata::Error,
+        source: Box<cargo_metadata::Error>,
     },
 
     #[error("no workspace package named {name:?}")]
@@ -92,12 +97,25 @@ pub enum ProjectError {
 }
 
 impl Project {
-    /// Load and resolve the crate at `manifest_path`, applying `overrides`.
+    /// Construct a project programmatically, with no `Cargo.toml`, `cargo
+    /// metadata`, or TOML parsing. The scope, name and version are required.
+    pub fn builder(
+        scope: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+    ) -> ProjectBuilder {
+        ProjectBuilder::new(scope, name, version)
+    }
+
+    /// Load and resolve the crate at `manifest_path`, applying `overrides`. This
+    /// is the cargo/TOML adapter; [`Project::builder`] is the dependency-free path.
     pub fn load(manifest_path: &Path, overrides: &Overrides) -> Result<Self, ProjectError> {
         let metadata = MetadataCommand::new()
             .manifest_path(manifest_path)
             .exec()
-            .map_err(|source| ProjectError::Metadata { source })?;
+            .map_err(|source| ProjectError::Metadata {
+                source: Box::new(source),
+            })?;
 
         let workspace_root = metadata.workspace_root.as_std_path().to_path_buf();
         let target_directory = metadata.target_directory.as_std_path().to_path_buf();

@@ -20,8 +20,6 @@ pub mod target;
 
 pub use config::{Config, Launcher, ManifestSpec, TargetSpec};
 pub use error::{Error, Result};
-pub use pipeline::{
-    DEFAULT_DRIVER, DEFAULT_MANIFEST_PATH, DEFAULT_OUT, Generator, GeneratorBuilder,
-};
-pub use project::{Author, Identity, Overrides, Project};
+pub use pipeline::{DEFAULT_DRIVER, DEFAULT_OUT, Generator};
+pub use project::{Author, DEFAULT_MANIFEST_PATH, Identity, Overrides, Project, ProjectBuilder};
 pub use target::Target;
