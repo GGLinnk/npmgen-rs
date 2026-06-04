@@ -1,0 +1,8 @@
+{
+  "name": "${name}",
+  "version": "${version}",
+  "description": "${description}",
+  "author": { "name": "${author_name}", "email": "${author_email}" },
+  "license": "${license}",
+  "keywords": ["hook", "pretooluse", "bash", "mcp", "guard"]
+}
