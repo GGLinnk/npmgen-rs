@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Generate the npm publish tree (meta + per-platform packages) that ships a prebuilt Rust binary."
@@ -21,7 +21,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `version` is required for `cargo publish`; keep it in sync with workspace.package.version.
-npmgen-core = { path = "crates/core", version = "0.1.0" }
+npmgen-core = { path = "crates/core", version = "0.1.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
