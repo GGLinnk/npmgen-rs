@@ -1,5 +1,7 @@
 # npmgen
 
+[![npmgen-cli on crates.io](https://img.shields.io/crates/v/npmgen-cli.svg?label=npmgen-cli)](https://crates.io/crates/npmgen-cli) [![npmgen-core on crates.io](https://img.shields.io/crates/v/npmgen-core.svg?label=npmgen-core)](https://crates.io/crates/npmgen-core) [![docs.rs](https://img.shields.io/docsrs/npmgen-core?label=docs.rs)](https://docs.rs/npmgen-core) [![license](https://img.shields.io/crates/l/npmgen-core.svg)](LICENSE)
+
 Ship a prebuilt Rust binary to npm.
 
 npmgen turns a Rust crate into an npm publish tree.

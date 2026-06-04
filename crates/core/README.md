@@ -1,5 +1,9 @@
 # npmgen-core
 
+[![crates.io](https://img.shields.io/crates/v/npmgen-core.svg)](https://crates.io/crates/npmgen-core)
+[![docs.rs](https://img.shields.io/docsrs/npmgen-core)](https://docs.rs/npmgen-core)
+[![license](https://img.shields.io/crates/l/npmgen-core.svg)](https://github.com/GGLinnk/npmgen-rs/blob/main/LICENSE)
+
 The library behind [npmgen](https://github.com/GGLinnk/npmgen-rs).
 
 It generates the npm publish tree that ships a prebuilt Rust binary.
