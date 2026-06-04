@@ -90,6 +90,15 @@ npmgen picks the platform set by precedence.
 
 A `--target` filter narrows whichever set wins.
 
+## Publishing
+
+npmgen writes the tree; publishing is your step.
+
+Each run rebuilds the tree in a staging directory and swaps it into place when complete.
+A re-run never leaves files from a previous, differently targeted tree.
+
+Publish the meta package and every platform package, for example with `npm publish` in each directory under the output root.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
