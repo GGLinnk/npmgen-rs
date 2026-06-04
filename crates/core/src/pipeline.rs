@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use tracing::info;
 
-use crate::compile::{CargoDriver, Compiler};
+use crate::compile::{BuildDriver, CargoDriver, Compiler};
 use crate::error::{Error, Result};
 use crate::npm::Assembler;
 use crate::project::Project;
@@ -33,6 +33,7 @@ pub struct Generator<'a> {
     no_build: bool,
     driver: String,
     targets: Vec<String>,
+    build_driver: Option<&'a dyn BuildDriver>,
 }
 
 impl<'a> Generator<'a> {
@@ -45,7 +46,15 @@ impl<'a> Generator<'a> {
             no_build: false,
             driver: DEFAULT_DRIVER.to_owned(),
             targets: Vec::new(),
+            build_driver: None,
         }
+    }
+
+    /// Inject a build driver, overriding the default cargo command. Lets a
+    /// library consumer or test supply a custom [`BuildDriver`].
+    pub fn build_driver(mut self, driver: &'a dyn BuildDriver) -> Self {
+        self.build_driver = Some(driver);
+        self
     }
 
     /// Output root for the generated tree.
@@ -96,8 +105,12 @@ impl<'a> Generator<'a> {
             TargetResolver::new(&project.config, &project.workspace_root).resolve(&self.targets)?;
 
         if !self.no_build {
-            let driver = CargoDriver::new(&self.driver);
-            Compiler::new(&driver).compile_all(project, &targets)?;
+            let cargo = CargoDriver::new(&self.driver);
+            let driver: &dyn BuildDriver = match self.build_driver {
+                Some(injected) => injected,
+                None => &cargo,
+            };
+            Compiler::new(driver).compile_all(project, &targets)?;
         }
         Assembler::new(project, &targets, &self.out).assemble()?;
 

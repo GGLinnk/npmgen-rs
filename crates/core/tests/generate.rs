@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use npmgen_core::project::ProjectError;
 use npmgen_core::{
-    Config, Error, Generator, Launcher, ManifestSpec, NpmError, Overrides, Project, TargetSpec,
+    BuildDriver, CompileError, Config, Error, Generator, Launcher, ManifestSpec, NpmError,
+    Overrides, Project, Target, TargetSpec,
 };
 use serde_json::{Value, json};
 
@@ -436,4 +437,73 @@ fn generates_a_fail_open_launcher_without_a_bin() {
         meta.get("bin").is_none(),
         "no bin wired when launcher has none"
     );
+}
+
+#[test]
+fn places_an_existing_binary_into_its_platform_package() {
+    // Stage a fake compiled binary where the assembler expects it.
+    let target_dir = out_dir("placed-target");
+    let release = target_dir.join("x86_64-unknown-linux-gnu/release");
+    fs::create_dir_all(&release).unwrap();
+    fs::write(release.join("placed"), b"ELF").unwrap();
+
+    let config = Config {
+        targets: vec![target_spec("linux-x64")],
+        ..Config::default()
+    };
+    let project = Project::builder("@acme", "placed", "1.0.0")
+        .config(config)
+        .workspace_root(out_dir("placed-src"))
+        .target_directory(&target_dir)
+        .build()
+        .unwrap();
+
+    let out = out_dir("placed-out");
+    Generator::new(&project)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+
+    let shipped = out.join("placed-linux-x64/placed");
+    assert!(shipped.is_file(), "binary copied into the platform package");
+    assert_eq!(fs::read(&shipped).unwrap(), b"ELF");
+}
+
+/// A build driver that writes a stub binary instead of invoking cargo.
+#[derive(Debug)]
+struct StubDriver;
+
+impl BuildDriver for StubDriver {
+    fn build(&self, project: &Project, target: &Target) -> Result<(), CompileError> {
+        let path = target.binary_path(&project.target_directory, &project.bin);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"STUB").unwrap();
+        Ok(())
+    }
+}
+
+#[test]
+fn an_injected_build_driver_drives_the_build_phase() {
+    let config = Config {
+        targets: vec![target_spec("linux-x64")],
+        ..Config::default()
+    };
+    let project = Project::builder("@acme", "inj", "1.0.0")
+        .config(config)
+        .workspace_root(out_dir("inject-src"))
+        .target_directory(out_dir("inject-target"))
+        .build()
+        .unwrap();
+
+    let out = out_dir("inject-out");
+    let driver = StubDriver;
+    // No no_build: the build phase runs through the injected driver.
+    Generator::new(&project)
+        .out(&out)
+        .build_driver(&driver)
+        .run()
+        .unwrap();
+
+    assert_eq!(fs::read(out.join("inj-linux-x64/inj")).unwrap(), b"STUB");
 }
