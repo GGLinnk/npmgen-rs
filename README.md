@@ -124,6 +124,16 @@ Pin to a release tag or commit SHA once one includes the action.
 Set up the Rust toolchain and any cross-compilation targets beforehand; the action does not install Rust.
 The generated tree root is exposed as the `out` output.
 
+## Security
+
+npmgen runs `cargo build`, which executes the target crate's build scripts and procedural macros.
+Only run npmgen on code you trust.
+Use `--no-build` to assemble a tree from binaries you built elsewhere, without compiling untrusted code.
+
+Do not run the GitHub Action on untrusted pull requests with registry tokens or other secrets in scope; restrict publishing to trusted refs such as tags.
+
+Error messages and logs can include absolute file paths, so treat CI logs as you would any build output.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
