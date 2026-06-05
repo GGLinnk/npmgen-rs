@@ -54,6 +54,7 @@ impl TreeWriter {
     /// Copy a single file to `relative`, creating parent directories.
     pub fn copy_file(&self, from: &Path, relative: &str) -> Result<(), NpmError> {
         Self::guard(relative)?;
+        Self::reject_symlink(from)?;
         let to = self.root.join(relative);
         if let Some(parent) = to.parent() {
             Self::create_dir(parent)?;
@@ -68,6 +69,7 @@ impl TreeWriter {
         if !from.exists() {
             return Ok(false);
         }
+        Self::reject_symlink(from)?;
         if from.is_dir() {
             Self::copy_tree(from, &self.root.join(relative))?;
         } else {
@@ -78,7 +80,7 @@ impl TreeWriter {
 
     /// Reject a destination that is absolute or climbs out of the package via
     /// `..`, so payload always lands inside the package directory.
-    fn guard(relative: &str) -> Result<(), NpmError> {
+    pub(super) fn guard(relative: &str) -> Result<(), NpmError> {
         use std::path::Component;
         let escapes = Path::new(relative).components().any(|component| {
             matches!(
@@ -89,6 +91,21 @@ impl TreeWriter {
         if escapes {
             return Err(NpmError::PathEscape {
                 path: relative.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Reject a symlink source. A link committed in the crate could otherwise
+    /// pull a file from outside the workspace into the published package.
+    pub(super) fn reject_symlink(path: &Path) -> Result<(), NpmError> {
+        let metadata = fs::symlink_metadata(path).map_err(|source| NpmError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(NpmError::Symlink {
+                path: path.to_path_buf(),
             });
         }
         Ok(())
@@ -124,7 +141,14 @@ impl TreeWriter {
             })?;
             let source = entry.path();
             let destination = to.join(entry.file_name());
-            if source.is_dir() {
+            let file_type = entry.file_type().map_err(|err| NpmError::ReadDir {
+                path: source.clone(),
+                source: err,
+            })?;
+            if file_type.is_symlink() {
+                return Err(NpmError::Symlink { path: source });
+            }
+            if file_type.is_dir() {
                 Self::copy_tree(&source, &destination)?;
             } else {
                 Self::copy_one(&source, &destination)?;
@@ -187,6 +211,46 @@ mod tests {
 
         assert!(root.join("pkg/payload/a/b/leaf.txt").is_file());
         assert!(root.join("pkg/payload/top.txt").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlinked_source_file() {
+        let root = scratch("symlink-file");
+        let secret = root.join("secret.txt");
+        fs::write(&secret, "secret").unwrap();
+        let link = root.join("link.txt");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let writer = TreeWriter::new(root.join("pkg"));
+        writer.ensure().unwrap();
+        assert!(matches!(
+            writer.copy_file(&link, "link.txt").unwrap_err(),
+            NpmError::Symlink { .. }
+        ));
+        assert!(matches!(
+            writer.copy_path(&link, "link.txt").unwrap_err(),
+            NpmError::Symlink { .. }
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlink_inside_a_copied_tree() {
+        let root = scratch("symlink-tree");
+        let payload = root.join("payload");
+        fs::create_dir_all(&payload).unwrap();
+        fs::write(payload.join("ok.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", payload.join("escape")).unwrap();
+
+        let writer = TreeWriter::new(root.join("pkg"));
+        writer.ensure().unwrap();
+        assert!(matches!(
+            writer.copy_path(&payload, "payload").unwrap_err(),
+            NpmError::Symlink { .. }
+        ));
         let _ = fs::remove_dir_all(&root);
     }
 }

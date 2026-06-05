@@ -12,6 +12,14 @@ use std::path::Path;
 
 use super::NpmError;
 
+/// Largest foreign manifest npmgen reads, so a crafted file cannot exhaust
+/// memory when slurped whole.
+const MAX_MANIFEST_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Largest `${...}` placeholder npmgen scans for, bounding the search when a
+/// closing brace is absent.
+const MAX_PLACEHOLDER_LEN: usize = 256;
+
 /// A rendered manifest, ready to be written in its native format.
 #[derive(Debug)]
 pub enum RenderedManifest {
@@ -32,6 +40,17 @@ impl<'a> ManifestRenderer<'a> {
     /// Parse `src` by extension, substitute identity variables, and return the
     /// rendered tree.
     pub fn render(&self, src: &Path) -> Result<RenderedManifest, NpmError> {
+        let metadata = fs::metadata(src).map_err(|source| NpmError::Read {
+            path: src.to_path_buf(),
+            source,
+        })?;
+        if metadata.len() > MAX_MANIFEST_BYTES {
+            return Err(NpmError::ManifestTooLarge {
+                path: src.to_path_buf(),
+                size: metadata.len(),
+                max: MAX_MANIFEST_BYTES,
+            });
+        }
         let text = fs::read_to_string(src).map_err(|source| NpmError::Read {
             path: src.to_path_buf(),
             source,
@@ -115,8 +134,10 @@ impl<'a> ManifestRenderer<'a> {
         while let Some(start) = rest.find(OPEN) {
             out.push_str(&rest[..start]);
             let after = &rest[start + OPEN.len()..];
-            let end = after
-                .find('}')
+            let limit = after.len().min(MAX_PLACEHOLDER_LEN);
+            let end = after.as_bytes()[..limit]
+                .iter()
+                .position(|&byte| byte == b'}')
                 .ok_or_else(|| NpmError::UnterminatedPlaceholder {
                     path: src.to_path_buf(),
                 })?;
@@ -241,6 +262,29 @@ mod tests {
         assert_eq!(reparsed["nested"]["inner"].as_str(), Some("nocmd"));
         assert_eq!(reparsed["nested"]["list"][0].as_str(), Some("0.1.1"));
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oversized_manifest_is_rejected() {
+        let path = scratch("huge.json");
+        let big = "a".repeat(MAX_MANIFEST_BYTES as usize + 1);
+        std::fs::write(&path, format!("{{ \"x\": \"{big}\" }}")).unwrap();
+        let variables = variables();
+        let error = ManifestRenderer::new(&variables).render(&path).unwrap_err();
+        assert!(matches!(error, NpmError::ManifestTooLarge { .. }));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_overlong_placeholder_is_unterminated() {
+        let path = scratch("overlong.json");
+        let name = "a".repeat(MAX_PLACEHOLDER_LEN + 8);
+        let placeholder = format!("${{{name}}}");
+        std::fs::write(&path, format!("{{ \"x\": \"{placeholder}\" }}")).unwrap();
+        let variables = variables();
+        let error = ManifestRenderer::new(&variables).render(&path).unwrap_err();
+        assert!(matches!(error, NpmError::UnterminatedPlaceholder { .. }));
         let _ = std::fs::remove_file(&path);
     }
 }

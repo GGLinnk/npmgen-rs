@@ -123,7 +123,9 @@ impl<'a> Assembler<'a> {
 
         let renderer = ManifestRenderer::new(variables);
         for manifest in &project.config.manifests {
+            TreeWriter::guard(manifest.src())?;
             let src = project.workspace_root.join(manifest.src());
+            TreeWriter::reject_symlink(&src)?;
             match renderer.render(&src)? {
                 RenderedManifest::Json(value) => writer.write_json(manifest.dest(), &value)?,
                 RenderedManifest::Toml(text) => writer.write_string(manifest.dest(), &text)?,
@@ -180,6 +182,14 @@ impl<'a> Assembler<'a> {
         let file_name = out.file_name().ok_or_else(|| NpmError::InvalidOut {
             path: out.to_path_buf(),
         })?;
+        if out
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(NpmError::OutEscape {
+                path: out.to_path_buf(),
+            });
+        }
         let mut staged = file_name.to_os_string();
         staged.push(format!("{STAGING_SUFFIX}{}", std::process::id()));
         Ok(match out.parent() {
@@ -283,6 +293,15 @@ pub enum NpmError {
     #[error("output path {} has no final component to write into (e.g. \".\" or a root)", path.display())]
     InvalidOut { path: PathBuf },
 
+    #[error("output path {} must not contain \"..\"", path.display())]
+    OutEscape { path: PathBuf },
+
+    #[error("refusing to follow symlink {}", path.display())]
+    Symlink { path: PathBuf },
+
+    #[error("manifest {} is {size} bytes, over the {max}-byte limit", path.display())]
+    ManifestTooLarge { path: PathBuf, size: u64, max: u64 },
+
     #[error("serializing JSON for {}", path.display())]
     Serialize {
         path: PathBuf,
@@ -319,4 +338,34 @@ pub enum NpmError {
 
     #[error("unterminated ${{...}} placeholder in manifest {}", path.display())]
     UnterminatedPlaceholder { path: PathBuf },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Assembler, NpmError};
+    use crate::config::ManifestSpec;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("npmgen-assemble-{}-{tag}", std::process::id()))
+    }
+
+    #[test]
+    fn output_path_with_parent_dir_is_rejected() {
+        assert!(matches!(
+            Assembler::new(Path::new("../escape")).unwrap_err(),
+            NpmError::OutEscape { .. }
+        ));
+    }
+
+    #[test]
+    fn manifest_source_escaping_the_workspace_is_rejected() {
+        let mut project = crate::project::sample_project();
+        project.config.manifests = vec![ManifestSpec::Path("../secret.json".to_owned())];
+
+        let out = scratch("manifest-escape");
+        let assembler = Assembler::new(&out).unwrap();
+        let error = assembler.add(&project, &[]).unwrap_err();
+        assert!(matches!(error, NpmError::PathEscape { .. }));
+    }
 }
