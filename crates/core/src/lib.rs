@@ -26,5 +26,6 @@ pub use npm::NpmError;
 pub use pipeline::{DEFAULT_DRIVER, DEFAULT_OUT, Generator};
 pub use project::{
     Author, DEFAULT_MANIFEST_PATH, Identity, Overrides, Project, ProjectBuilder, ProjectError,
+    Workspace,
 };
 pub use target::{Target, TargetError};

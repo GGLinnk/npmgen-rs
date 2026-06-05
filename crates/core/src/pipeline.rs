@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::compile::{BuildDriver, CargoDriver, Compiler};
 use crate::error::{Error, Result};
@@ -23,11 +23,13 @@ pub const DEFAULT_DRIVER: &str = "cargo";
 /// Release-tag prefix that `--tag` is checked against (`v<version>`).
 const TAG_PREFIX: &str = "v";
 
-/// Generates the publish tree for a [`Project`]. Construct with [`Generator::new`]
-/// and configure with the chained setters.
+/// Generates the publish tree for one or more [`Project`]s into a shared output
+/// root, atomically. Construct with [`Generator::new`] (single) or
+/// [`Generator::for_projects`] (a workspace's bins) and configure with the
+/// chained setters.
 #[derive(Debug)]
 pub struct Generator<'a> {
-    project: &'a Project,
+    projects: &'a [Project],
     out: PathBuf,
     tag: Option<String>,
     no_build: bool,
@@ -37,10 +39,16 @@ pub struct Generator<'a> {
 }
 
 impl<'a> Generator<'a> {
-    /// Start a generation for `project`, with default output root and driver.
+    /// Start a generation for a single project.
     pub fn new(project: &'a Project) -> Self {
+        Self::for_projects(std::slice::from_ref(project))
+    }
+
+    /// Start a generation for several projects (e.g. one per workspace bin)
+    /// sharing one output root; they are assembled and swapped together.
+    pub fn for_projects(projects: &'a [Project]) -> Self {
         Self {
-            project,
+            projects,
             out: PathBuf::from(DEFAULT_OUT),
             tag: None,
             no_build: false,
@@ -87,37 +95,52 @@ impl<'a> Generator<'a> {
         self
     }
 
-    /// Run the full pipeline.
+    /// Build (unless skipped) and assemble every project, then atomically swap
+    /// the whole tree onto `out`. Either all projects land or none do.
     pub fn run(&self) -> Result<()> {
-        let project = self.project;
+        let assembler = Assembler::new(&self.out)?;
+        let mut total_targets = 0;
+        let mut missing = Vec::new();
 
-        if let Some(tag) = &self.tag {
-            let expected = format!("{TAG_PREFIX}{}", project.version);
-            if tag != &expected {
-                return Err(Error::TagMismatch {
-                    tag: tag.clone(),
-                    expected,
-                });
+        for project in self.projects {
+            if let Some(tag) = &self.tag {
+                let expected = format!("{TAG_PREFIX}{}", project.version);
+                if tag != &expected {
+                    return Err(Error::TagMismatch {
+                        tag: tag.clone(),
+                        expected,
+                    });
+                }
             }
+
+            let targets = TargetResolver::new(&project.config, &project.workspace_root)
+                .resolve(&self.targets)?;
+
+            if !self.no_build {
+                let cargo = CargoDriver::new(&self.driver);
+                let driver: &dyn BuildDriver = match self.build_driver {
+                    Some(injected) => injected,
+                    None => &cargo,
+                };
+                Compiler::new(driver).compile_all(project, &targets)?;
+            }
+
+            total_targets += targets.len();
+            missing.extend(assembler.add(project, &targets)?);
         }
 
-        let targets =
-            TargetResolver::new(&project.config, &project.workspace_root).resolve(&self.targets)?;
+        assembler.commit()?;
 
-        if !self.no_build {
-            let cargo = CargoDriver::new(&self.driver);
-            let driver: &dyn BuildDriver = match self.build_driver {
-                Some(injected) => injected,
-                None => &cargo,
-            };
-            Compiler::new(driver).compile_all(project, &targets)?;
+        if !missing.is_empty() {
+            warn!(
+                placed = total_targets - missing.len(),
+                total = total_targets,
+                missing = ?missing,
+                "platform packages have no binary yet; place them before publishing",
+            );
         }
-        Assembler::new(project, &targets, &self.out).assemble()?;
-
         info!(
-            package = %project.package_name(),
-            version = %project.version,
-            targets = targets.len(),
+            packages = self.projects.len(),
             out = %self.out.display(),
             "generated npm publish tree",
         );

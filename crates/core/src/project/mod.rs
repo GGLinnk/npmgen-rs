@@ -1,47 +1,52 @@
-//! The target crate, resolved via `cargo metadata`.
+//! The target crate(s), resolved via `cargo metadata`.
 //!
-//! Identity (version, description, author, repository, license) is taken from
-//! the selected package with workspace inheritance applied by cargo. When no
-//! package is selected (a virtual workspace root), it falls back to
-//! `[workspace.package]` read from the workspace `Cargo.toml`. The `npmgen`
-//! configuration is read from the package's `metadata.npmgen`, else from
-//! `[workspace.metadata.npmgen]`.
+//! npmgen mirrors cargo: it publishes the binaries cargo would build, one npm
+//! package per binary, named after the binary. Identity (version, description,
+//! author, repository, license) comes from each package with `[workspace.package]`
+//! inheritance already applied by cargo. npmgen-specific settings live in
+//! `[package.metadata.npmgen]`, inheriting `[workspace.metadata.npmgen]` the way
+//! cargo inherits `[workspace.package]`.
 
 mod author;
 mod builder;
 mod identity;
+mod workspace;
 
 pub use author::Author;
 pub use builder::ProjectBuilder;
 pub use identity::Identity;
+pub use workspace::Workspace;
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use cargo_metadata::{MetadataCommand, Package};
+use cargo_metadata::Package;
 
 use crate::config::Config;
 
-/// Default manifest path for [`Project::load`].
+/// Default manifest path for [`Project::discover`].
 pub const DEFAULT_MANIFEST_PATH: &str = "Cargo.toml";
 
 /// Metadata table key under `[package.metadata.*]` / `[workspace.metadata.*]`.
-const METADATA_KEY: &str = "npmgen";
+pub(crate) const METADATA_KEY: &str = "npmgen";
 
-/// Identity overrides supplied on the command line. Each `Some` wins over the
-/// value read from the manifest.
+/// Command-line selection, mirroring `cargo`'s package/target flags. Empty
+/// vectors mean "no restriction"; the defaults match `cargo build`.
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
-    /// Workspace package to describe and build.
-    pub package: Option<String>,
-    /// Cargo bin name shipped in platform packages.
-    pub bin: Option<String>,
-    /// Package version.
+    /// `-p/--package`: restrict to these workspace members (repeatable).
+    pub packages: Vec<String>,
+    /// `--workspace`: select every workspace member.
+    pub workspace: bool,
+    /// `--exclude`: drop these members from the selection (repeatable).
+    pub exclude: Vec<String>,
+    /// `--bin`: restrict to these binaries (repeatable).
+    pub bins: Vec<String>,
+    /// Override the package version for every selected bin.
     pub version: Option<String>,
 }
 
-/// Everything the pipeline needs about the target crate.
+/// Everything the pipeline needs to ship one binary as an npm package.
 #[derive(Debug, Clone)]
 pub struct Project {
     pub identity: Identity,
@@ -50,17 +55,16 @@ pub struct Project {
     pub author: Author,
     pub license: String,
     pub repository: String,
-    /// Cargo bin name to build and ship.
+    /// Cargo bin name to build and ship; also the npm package name.
     pub bin: String,
-    /// Selected cargo package name, passed as `--package` to the build. `None`
-    /// when describing a virtual workspace root with no package selected.
+    /// Owning cargo package, passed as `--package` to the build.
     pub package: Option<String>,
     pub config: Config,
     pub workspace_root: PathBuf,
     pub target_directory: PathBuf,
 }
 
-/// Failures loading and resolving the target crate.
+/// Failures loading and resolving the target crate(s).
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
     #[error("running `cargo metadata`")]
@@ -72,30 +76,32 @@ pub enum ProjectError {
     #[error("no workspace package named {name:?}")]
     PackageNotFound { name: String },
 
-    #[error("[workspace.package] repository must be set to https://<host>/<owner>/<repo>")]
+    #[error("package repository must be set to https://<host>/<owner>/<repo>")]
     MissingRepository,
 
-    #[error("no version found; set it in Cargo.toml or pass --pkg-version")]
-    MissingVersion,
+    #[error("package {package:?} has no bin named {bin:?}")]
+    UnknownBin { package: String, bin: String },
+
+    #[error("no workspace bin named {bin:?}")]
+    BinNotInWorkspace { bin: String },
+
+    #[error("bin {bin:?} is defined by more than one package ({}); select one with --package", packages.join(", "))]
+    AmbiguousBin { bin: String, packages: Vec<String> },
+
+    #[error(
+        "nothing to publish: no selected package ships a binary (every match is a library or `publish = false`)"
+    )]
+    NothingToPublish,
+
+    #[error(
+        "{count} binaries match; narrow with --package/--bin, or use Project::discover for the full set"
+    )]
+    NotSingle { count: usize },
 
     #[error("invalid project field {field}: {reason}")]
     InvalidField {
         field: &'static str,
         reason: &'static str,
-    },
-
-    #[error("reading manifest {}", path.display())]
-    ReadManifest {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("parsing manifest {}", path.display())]
-    ParseManifest {
-        path: PathBuf,
-        #[source]
-        source: toml::de::Error,
     },
 
     #[error(transparent)]
@@ -113,80 +119,75 @@ impl Project {
         ProjectBuilder::new(scope, name, version)
     }
 
-    /// Load and resolve the crate at `manifest_path`, applying `overrides`. This
-    /// is the cargo/TOML adapter; [`Project::builder`] is the dependency-free path.
+    /// Resolve every publishable binary at `manifest_path` into a project.
+    ///
+    /// Selection mirrors `cargo build`: by default the workspace's
+    /// default-members (or all members), each member's binaries, skipping
+    /// libraries and `publish = false` crates. `--package`/`--workspace`/
+    /// `--exclude`/`--bin` narrow the set exactly as cargo's flags do. Each
+    /// binary becomes one npm package named after the binary.
+    pub fn discover(
+        manifest_path: &Path,
+        overrides: &Overrides,
+    ) -> Result<Vec<Self>, ProjectError> {
+        let projects = Workspace::load(manifest_path)?.projects(overrides)?;
+        if projects.is_empty() {
+            return Err(ProjectError::NothingToPublish);
+        }
+        Ok(projects)
+    }
+
+    /// Resolve a single binary at `manifest_path`. A convenience over
+    /// [`discover`](Self::discover) for the common one-binary case; errors with
+    /// [`ProjectError::NotSingle`] when the selection matches more than one.
     pub fn load(manifest_path: &Path, overrides: &Overrides) -> Result<Self, ProjectError> {
-        let metadata = MetadataCommand::new()
-            .manifest_path(manifest_path)
-            .exec()
-            .map_err(|source| ProjectError::Metadata {
-                source: Box::new(source),
-            })?;
+        let mut projects = Self::discover(manifest_path, overrides)?;
+        match projects.len() {
+            1 => Ok(projects.pop().unwrap()),
+            count => Err(ProjectError::NotSingle { count }),
+        }
+    }
 
-        let workspace_root = metadata.workspace_root.as_std_path().to_path_buf();
-        let target_directory = metadata.target_directory.as_std_path().to_path_buf();
-        let workspace_package = WorkspacePackage::read(&workspace_root)?;
-
-        let selected = Self::select_package(&metadata, overrides.package.as_deref())?;
-
-        let npmgen_value = selected
-            .and_then(|package| package.metadata.get(METADATA_KEY))
-            .or_else(|| metadata.workspace_metadata.get(METADATA_KEY))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let config = Config::from_metadata(&npmgen_value)?;
-
+    /// Build a per-bin project from a workspace member package. The npm name is
+    /// the bin name; scope and git URL come from the package's repository.
+    pub(crate) fn from_package_bin(
+        package: &Package,
+        bin: &str,
+        config: &Config,
+        overrides: &Overrides,
+        workspace_root: &Path,
+        target_directory: &Path,
+    ) -> Result<Self, ProjectError> {
+        let repository = package
+            .repository
+            .clone()
+            .ok_or(ProjectError::MissingRepository)?;
+        let base = Identity::from_repository(&repository, config.scope.as_deref())?;
+        let identity = Identity {
+            name: bin.to_owned(),
+            ..base
+        };
         let version = overrides
             .version
             .clone()
-            .or_else(|| selected.map(|package| package.version.to_string()))
-            .or_else(|| workspace_package.version.clone())
-            .ok_or(ProjectError::MissingVersion)?;
-
-        let description = selected
-            .and_then(|package| package.description.clone())
-            .or_else(|| workspace_package.description.clone())
-            .unwrap_or_default();
-
-        let author_full = selected
-            .and_then(|package| package.authors.first().cloned())
-            .or_else(|| workspace_package.author.clone())
-            .unwrap_or_default();
-
-        let repository = selected
-            .and_then(|package| package.repository.clone())
-            .or_else(|| workspace_package.repository.clone())
-            .ok_or(ProjectError::MissingRepository)?;
-
+            .unwrap_or_else(|| package.version.to_string());
         let license = config
             .license
             .clone()
-            .or_else(|| selected.and_then(|package| package.license.clone()))
-            .or_else(|| workspace_package.license.clone())
+            .or_else(|| package.license.clone())
             .unwrap_or_default();
-
-        let identity = Identity::from_repository(&repository, config.scope.as_deref())?;
-
-        let bin = overrides
-            .bin
-            .clone()
-            .or_else(|| config.bin.clone())
-            .unwrap_or_else(|| identity.name.clone());
-
-        let package = selected.map(|package| package.name.as_str().to_owned());
-
         Ok(Self {
-            author: Author::parse(&author_full),
+            identity,
             version,
-            description,
+            description: package.description.clone().unwrap_or_default(),
+            author: Author::parse(&package.authors.first().cloned().unwrap_or_default()),
             license,
             repository,
-            bin,
-            package,
-            identity,
-            config,
-            workspace_root,
-            target_directory,
+            bin: bin.to_owned(),
+            package: Some(package.name.as_str().to_owned()),
+            config: config.clone(),
+            workspace_root: workspace_root.to_path_buf(),
+            target_directory: target_directory.to_path_buf(),
         })
     }
 
@@ -215,74 +216,6 @@ impl Project {
             ),
         ])
     }
-
-    /// Select the package whose identity and config drive generation: an
-    /// explicit `--package`, else the workspace root package, else none (a
-    /// virtual workspace).
-    fn select_package<'a>(
-        metadata: &'a cargo_metadata::Metadata,
-        package: Option<&str>,
-    ) -> Result<Option<&'a Package>, ProjectError> {
-        match package {
-            Some(name) => metadata
-                .workspace_packages()
-                .into_iter()
-                .find(|package| package.name.as_str() == name)
-                .map(Some)
-                .ok_or_else(|| ProjectError::PackageNotFound {
-                    name: name.to_owned(),
-                }),
-            None => Ok(metadata.root_package()),
-        }
-    }
-}
-
-/// The literal `[workspace.package]` fields, the identity source for a virtual
-/// workspace root that no member inherits from.
-#[derive(Debug, Default)]
-struct WorkspacePackage {
-    version: Option<String>,
-    description: Option<String>,
-    repository: Option<String>,
-    license: Option<String>,
-    author: Option<String>,
-}
-
-impl WorkspacePackage {
-    fn read(workspace_root: &Path) -> Result<Self, ProjectError> {
-        let path = workspace_root.join("Cargo.toml");
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
-            Err(source) => return Err(ProjectError::ReadManifest { path, source }),
-        };
-        let value: toml::Value =
-            toml::from_str(&text).map_err(|source| ProjectError::ParseManifest { path, source })?;
-
-        let Some(package) = value.get("workspace").and_then(|ws| ws.get("package")) else {
-            return Ok(Self::default());
-        };
-        let string = |key: &str| {
-            package
-                .get(key)
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-        };
-        Ok(Self {
-            version: string("version"),
-            description: string("description"),
-            repository: string("repository"),
-            license: string("license"),
-            author: package
-                .get("authors")
-                .and_then(toml::Value::as_array)
-                .and_then(|authors| authors.first())
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned),
-        })
-    }
 }
 
 /// A nocmd-shaped [`Project`] for tests in this crate (no filesystem or cargo
@@ -305,45 +238,5 @@ pub(crate) fn sample_project() -> Project {
         config: Config::default(),
         workspace_root: PathBuf::from("."),
         target_directory: PathBuf::from("target"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::WorkspacePackage;
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("npmgen-ws-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn reads_workspace_package_fields_and_first_author() {
-        let dir = scratch("read");
-        fs::write(
-            dir.join("Cargo.toml"),
-            "[workspace]\n[workspace.package]\nversion = \"3.1.4\"\ndescription = \"d\"\nrepository = \"https://h/o/r\"\nlicense = \"MIT\"\nauthors = [\"A <a@b>\", \"B\"]\n",
-        )
-        .unwrap();
-
-        let workspace = WorkspacePackage::read(&dir).unwrap();
-        assert_eq!(workspace.version.as_deref(), Some("3.1.4"));
-        assert_eq!(workspace.repository.as_deref(), Some("https://h/o/r"));
-        assert_eq!(workspace.license.as_deref(), Some("MIT"));
-        assert_eq!(workspace.author.as_deref(), Some("A <a@b>"));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn absent_workspace_package_is_empty() {
-        let dir = scratch("empty");
-        fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
-        let workspace = WorkspacePackage::read(&dir).unwrap();
-        assert!(workspace.version.is_none() && workspace.author.is_none());
-        let _ = fs::remove_dir_all(&dir);
     }
 }

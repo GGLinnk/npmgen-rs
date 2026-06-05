@@ -128,10 +128,7 @@ impl ProjectBuilder {
             });
         }
 
-        let bin = self
-            .bin
-            .or_else(|| self.config.bin.clone())
-            .unwrap_or_else(|| self.name.clone());
+        let bin = self.bin.unwrap_or_else(|| self.name.clone());
         Ok(Project {
             identity: Identity {
                 scope: self.scope,

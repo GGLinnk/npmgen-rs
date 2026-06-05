@@ -14,6 +14,7 @@ mod writer;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::warn;
 
@@ -30,85 +31,116 @@ use crate::target::Target;
 const PACKAGE_JSON: &str = "package.json";
 /// Suffix of the sibling staging directory assembled before the atomic swap.
 const STAGING_SUFFIX: &str = ".npmgen-staging";
+/// Suffix of the sibling directory the previous tree is moved to during a swap.
+const ASIDE_SUFFIX: &str = ".npmgen-old";
 
-/// Assembles the full publish tree for a project.
+/// Monotonic counter making each set-aside directory name unique within the
+/// process, so the swap never renames onto an existing path.
+static SWAP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Builds the publish tree for one or more projects in a sibling staging
+/// directory, then atomically swaps it onto `out`. Add each project, then
+/// `commit`; dropping without committing discards the staging directory, so a
+/// run is all-or-nothing and a re-run never leaves a previous tree behind.
 #[derive(Debug)]
 pub struct Assembler<'a> {
-    project: &'a Project,
-    targets: &'a [Target],
     out: &'a Path,
-    variables: BTreeMap<String, String>,
+    staging: PathBuf,
+    committed: bool,
 }
 
 impl<'a> Assembler<'a> {
-    pub fn new(project: &'a Project, targets: &'a [Target], out: &'a Path) -> Self {
-        Self {
-            variables: project.variables(),
-            project,
-            targets,
-            out,
-        }
-    }
-
-    /// Build the tree in staging and atomically swap it onto `out`. On any
-    /// failure the staging directory is removed rather than left behind.
-    pub fn assemble(&self) -> Result<(), NpmError> {
-        let staging = self.staging_dir()?;
+    /// Prepare a fresh staging directory for `out`.
+    pub fn new(out: &'a Path) -> Result<Self, NpmError> {
+        let staging = Self::staging_dir(out)?;
         Self::reset(&staging)?;
-        match self.assemble_into(&staging) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let _ = Self::reset(&staging);
-                Err(error)
-            }
-        }
+        Ok(Self {
+            out,
+            staging,
+            committed: false,
+        })
     }
 
-    fn assemble_into(&self, staging: &Path) -> Result<(), NpmError> {
-        self.assemble_meta(staging)?;
-        let missing = self.assemble_platforms(staging)?;
-        self.swap(staging)?;
+    /// Write one project's package tree into staging. Returns the `<name>-<key>`
+    /// of every target whose binary was not present to copy.
+    pub fn add(&self, project: &Project, targets: &[Target]) -> Result<Vec<String>, NpmError> {
+        let variables = project.variables();
+        self.write_meta(project, targets, &variables)?;
+        self.write_platforms(project, targets)
+    }
 
-        if !missing.is_empty() {
-            warn!(
-                placed = self.targets.len() - missing.len(),
-                total = self.targets.len(),
-                missing = ?missing,
-                "platform packages have no binary yet; place them before publishing",
-            );
+    /// Atomically replace `out` with the staged tree.
+    ///
+    /// The existing tree (if any) is first renamed aside to a unique sibling,
+    /// then staging is renamed into the now-free path, then the set-aside tree
+    /// is removed best-effort. This avoids the Windows "remove then rename onto
+    /// the same path" race: there, the directory deletion is asynchronous, so
+    /// the destination is briefly still occupied and the rename fails. Renaming
+    /// aside is synchronous and targets a fresh name, so no such window exists.
+    /// If the swap fails after the set-aside, the previous tree is restored, so
+    /// a failed commit is never data loss.
+    pub fn commit(mut self) -> Result<(), NpmError> {
+        let aside = Self::aside_dir(self.out);
+        let had_previous = match std::fs::rename(self.out, &aside) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(NpmError::Swap {
+                    from: self.out.to_path_buf(),
+                    to: aside,
+                    source,
+                });
+            }
+        };
+
+        if let Err(source) = std::fs::rename(&self.staging, self.out) {
+            if had_previous {
+                let _ = std::fs::rename(&aside, self.out);
+            }
+            return Err(NpmError::Swap {
+                from: self.staging.clone(),
+                to: self.out.to_path_buf(),
+                source,
+            });
+        }
+
+        self.committed = true;
+        if had_previous {
+            let _ = std::fs::remove_dir_all(&aside);
         }
         Ok(())
     }
 
-    fn assemble_meta(&self, staging: &Path) -> Result<(), NpmError> {
-        let writer = TreeWriter::new(staging.join(&self.project.identity.name));
+    fn write_meta(
+        &self,
+        project: &Project,
+        targets: &[Target],
+        variables: &BTreeMap<String, String>,
+    ) -> Result<(), NpmError> {
+        let writer = TreeWriter::new(self.staging.join(&project.identity.name));
         writer.ensure()?;
-        writer.write_json(
-            PACKAGE_JSON,
-            &MetaPackage::new(self.project, self.targets).to_value(),
-        )?;
+        writer.write_json(PACKAGE_JSON, &MetaPackage::new(project, targets).to_value())?;
 
-        let renderer = ManifestRenderer::new(&self.variables);
-        for manifest in &self.project.config.manifests {
-            let src = self.project.workspace_root.join(manifest.src());
+        let renderer = ManifestRenderer::new(variables);
+        for manifest in &project.config.manifests {
+            let src = project.workspace_root.join(manifest.src());
             match renderer.render(&src)? {
                 RenderedManifest::Json(value) => writer.write_json(manifest.dest(), &value)?,
                 RenderedManifest::Toml(text) => writer.write_string(manifest.dest(), &text)?,
             }
         }
 
-        if let Some(launcher) = &self.project.config.launcher {
+        if let Some(launcher) = &project.config.launcher {
             let dest = launcher.output();
             if launcher.is_generated() {
-                let script = LauncherScript::new(launcher.fail_open()).render();
-                writer.write_string(dest, &script)?;
+                writer.write_string(dest, &LauncherScript::new(launcher.fail_open()).render())?;
             } else {
-                writer.copy_file(&self.project.workspace_root.join(dest), dest)?;
+                writer.copy_file(&project.workspace_root.join(dest), dest)?;
             }
         }
 
-        for include in &self.project.config.include {
-            let from = self.project.workspace_root.join(include);
+        for include in &project.config.include {
+            let from = project.workspace_root.join(include);
             if !writer.copy_path(&from, include)? {
                 warn!(path = %from.display(), "include path not found; skipped");
             }
@@ -116,22 +148,25 @@ impl<'a> Assembler<'a> {
         Ok(())
     }
 
-    /// Returns the keys of targets whose binary was not present to copy.
-    fn assemble_platforms(&self, staging: &Path) -> Result<Vec<String>, NpmError> {
-        let name = &self.project.identity.name;
+    fn write_platforms(
+        &self,
+        project: &Project,
+        targets: &[Target],
+    ) -> Result<Vec<String>, NpmError> {
+        let name = &project.identity.name;
         let mut missing = Vec::new();
-        for target in self.targets {
-            let writer = TreeWriter::new(staging.join(format!("{name}-{}", target.key)));
+        for target in targets {
+            let writer = TreeWriter::new(self.staging.join(format!("{name}-{}", target.key)));
             writer.ensure()?;
             writer.write_json(
                 PACKAGE_JSON,
-                &PlatformPackage::new(self.project, target).to_value(),
+                &PlatformPackage::new(project, target).to_value(),
             )?;
 
-            let from = target.binary_path(&self.project.target_directory, &self.project.bin);
+            let from = target.binary_path(&project.target_directory, &project.bin);
             let dest = target.binary_filename(name);
             if !writer.copy_path(&from, &dest)? {
-                missing.push(target.key.clone());
+                missing.push(format!("{name}-{}", target.key));
             }
         }
         Ok(missing)
@@ -141,25 +176,31 @@ impl<'a> Assembler<'a> {
     /// suffixed with the process id so concurrent runs do not collide. Errors
     /// when `out` has no final component (`.`, `..`, a root), which would make
     /// the pre-swap reset delete the wrong directory.
-    fn staging_dir(&self) -> Result<PathBuf, NpmError> {
-        let file_name = self.out.file_name().ok_or_else(|| NpmError::InvalidOut {
-            path: self.out.to_path_buf(),
+    fn staging_dir(out: &Path) -> Result<PathBuf, NpmError> {
+        let file_name = out.file_name().ok_or_else(|| NpmError::InvalidOut {
+            path: out.to_path_buf(),
         })?;
         let mut staged = file_name.to_os_string();
         staged.push(format!("{STAGING_SUFFIX}{}", std::process::id()));
-        Ok(match self.out.parent() {
+        Ok(match out.parent() {
             Some(parent) => parent.join(staged),
             None => PathBuf::from(staged),
         })
     }
 
-    fn swap(&self, staging: &Path) -> Result<(), NpmError> {
-        Self::reset(self.out)?;
-        std::fs::rename(staging, self.out).map_err(|source| NpmError::Swap {
-            from: staging.to_path_buf(),
-            to: self.out.to_path_buf(),
-            source,
-        })
+    /// A unique sibling of `out` that holds the previous tree during a swap.
+    /// Keyed by process id and a monotonic counter, so it never names a
+    /// directory that already exists. Mirrors [`Self::staging_dir`]; `out` is
+    /// already known to have a final component (validated when staging was set
+    /// up), so a missing one degrades to a bare name rather than erroring.
+    fn aside_dir(out: &Path) -> PathBuf {
+        let seq = SWAP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let mut name = out.file_name().unwrap_or_default().to_os_string();
+        name.push(format!("{ASIDE_SUFFIX}{}-{seq}", std::process::id()));
+        match out.parent() {
+            Some(parent) => parent.join(name),
+            None => PathBuf::from(name),
+        }
     }
 
     fn reset(path: &Path) -> Result<(), NpmError> {
@@ -170,6 +211,14 @@ impl<'a> Assembler<'a> {
                 path: path.to_path_buf(),
                 source,
             }),
+        }
+    }
+}
+
+impl Drop for Assembler<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_dir_all(&self.staging);
         }
     }
 }

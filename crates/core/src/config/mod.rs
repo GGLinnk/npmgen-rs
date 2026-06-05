@@ -21,8 +21,6 @@ use serde::Deserialize;
 pub struct Config {
     /// npm scope (`@owner`); defaults to the repository owner.
     pub scope: Option<String>,
-    /// Cargo bin name to build and ship; defaults to the npm package name.
-    pub bin: Option<String>,
     /// SPDX license override; defaults to the crate's `license`.
     pub license: Option<String>,
     /// Launcher file bundled into the meta package, optionally wired as `bin`.
@@ -33,7 +31,7 @@ pub struct Config {
     pub extra: serde_json::Map<String, serde_json::Value>,
     /// Foreign manifests rendered by `${var}` identity substitution.
     pub manifests: Vec<ManifestSpec>,
-    /// Highest-precedence target list; empty means inherit from cargo or default.
+    /// Highest-precedence platform target list; empty means inherit from cargo or default.
     pub targets: Vec<TargetSpec>,
 }
 
@@ -56,6 +54,30 @@ impl Config {
         }
         serde_json::from_value(value.clone()).map_err(|source| ConfigError::Deserialize { source })
     }
+
+    /// Resolve this package-level config against the workspace-level `base`,
+    /// mirroring cargo's `[workspace.package]` inheritance: a field set here
+    /// wins, an unset one is inherited. Scalars inherit when `None`; lists
+    /// inherit when empty; `extra` maps merge key by key with this package's
+    /// entries taking precedence.
+    pub fn inherit(mut self, base: &Config) -> Config {
+        self.scope = self.scope.or_else(|| base.scope.clone());
+        self.license = self.license.or_else(|| base.license.clone());
+        self.launcher = self.launcher.or_else(|| base.launcher.clone());
+        if self.include.is_empty() {
+            self.include = base.include.clone();
+        }
+        if self.manifests.is_empty() {
+            self.manifests = base.manifests.clone();
+        }
+        if self.targets.is_empty() {
+            self.targets = base.targets.clone();
+        }
+        let mut extra = base.extra.clone();
+        extra.extend(std::mem::take(&mut self.extra));
+        self.extra = extra;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -75,7 +97,6 @@ mod tests {
     fn deserializes_full_table() {
         let value = json!({
             "scope": "@gglinnk",
-            "bin": "nocmd",
             "launcher": { "file": "launch.mjs", "bin": "nocmd" },
             "include": ["hooks"],
             "manifests": [".claude-plugin/plugin.json"],
@@ -88,6 +109,31 @@ mod tests {
         assert_eq!(config.manifests[0].dest(), ".claude-plugin/plugin.json");
         assert_eq!(config.targets[0].key, "win32-x64");
         assert!(config.extra.contains_key("keywords"));
+    }
+
+    #[test]
+    fn inherit_takes_workspace_defaults_then_package_overrides() {
+        let base = Config::from_metadata(&json!({
+            "scope": "@acme",
+            "targets": [{ "key": "linux-x64", "triple": "x86_64-unknown-linux-gnu" }],
+            "extra": { "keywords": ["shared"], "private": false },
+        }))
+        .unwrap();
+        let package = Config::from_metadata(&json!({
+            "manifests": [".claude-plugin/plugin.json"],
+            "extra": { "keywords": ["own"] },
+        }))
+        .unwrap();
+
+        let merged = package.inherit(&base);
+        // Unset fields inherit from the workspace.
+        assert_eq!(merged.scope.as_deref(), Some("@acme"));
+        assert_eq!(merged.targets[0].key, "linux-x64");
+        // Set fields win.
+        assert_eq!(merged.manifests[0].dest(), ".claude-plugin/plugin.json");
+        // Maps merge, package entries overriding.
+        assert_eq!(merged.extra["keywords"], json!(["own"]));
+        assert_eq!(merged.extra["private"], json!(false));
     }
 
     #[test]

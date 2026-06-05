@@ -18,13 +18,26 @@ pub struct Cli {
     #[arg(long, env = "NPMGEN_OUT", default_value = DEFAULT_OUT)]
     out: PathBuf,
 
-    /// Workspace package to describe and build.
-    #[arg(short = 'p', long, env = "NPMGEN_PACKAGE")]
-    package: Option<String>,
+    /// Publish only these workspace packages (repeatable or comma-separated).
+    #[arg(
+        short = 'p',
+        long = "package",
+        env = "NPMGEN_PACKAGE",
+        value_delimiter = ','
+    )]
+    packages: Vec<String>,
 
-    /// Cargo bin name shipped in platform packages.
-    #[arg(long, env = "NPMGEN_BIN")]
-    bin: Option<String>,
+    /// Publish every workspace member.
+    #[arg(long, env = "NPMGEN_WORKSPACE")]
+    workspace: bool,
+
+    /// Exclude these workspace packages (repeatable or comma-separated).
+    #[arg(long, env = "NPMGEN_EXCLUDE", value_delimiter = ',')]
+    exclude: Vec<String>,
+
+    /// Publish only these binaries (repeatable or comma-separated).
+    #[arg(long = "bin", env = "NPMGEN_BIN", value_delimiter = ',')]
+    bins: Vec<String>,
 
     /// Override the package version (otherwise read from Cargo.toml).
     #[arg(long = "pkg-version", env = "NPMGEN_PKG_VERSION")]
@@ -48,17 +61,20 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Load the target crate, then generate. Loading (the cargo/TOML adapter) and
+    /// Discover the publishable binaries (cargo's selection model), then
+    /// generate them together into one tree. Discovery (the cargo adapter) and
     /// generation are composed here; the library exposes them separately.
     pub fn run(self) -> Result<()> {
         let overrides = Overrides {
-            package: self.package,
-            bin: self.bin,
+            packages: self.packages,
+            workspace: self.workspace,
+            exclude: self.exclude,
+            bins: self.bins,
             version: self.pkg_version,
         };
-        let project = Project::load(&self.manifest_path, &overrides)?;
+        let projects = Project::discover(&self.manifest_path, &overrides)?;
 
-        let mut generator = Generator::new(&project)
+        let mut generator = Generator::for_projects(&projects)
             .out(self.out)
             .no_build(self.no_build)
             .driver(self.builder)
