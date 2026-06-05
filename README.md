@@ -108,6 +108,22 @@ A re-run never leaves files from a previous, differently targeted tree.
 
 Publish the meta package and every platform package, for example with `npm publish` in each directory under the output root.
 
+## GitHub Action
+
+Run npmgen in any workflow with the bundled composite action.
+
+```yaml
+- uses: GGLinnk/npmgen-rs@main
+  with:
+    target: linux-x64,darwin-arm64
+    no-build: "true"
+```
+
+It installs `npmgen-cli` from crates.io and runs it; every CLI flag maps to an input (`manifest-path`, `out`, `package`, `workspace`, `exclude`, `bin`, `pkg-version`, `tag`, `no-build`, `builder`, `target`), and `version` pins the CLI.
+Pin to a release tag or commit SHA once one includes the action.
+Set up the Rust toolchain and any cross-compilation targets beforehand; the action does not install Rust.
+The generated tree root is exposed as the `out` output.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
