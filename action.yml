@@ -6,11 +6,15 @@ branding:
   icon: package
   color: orange
 
+# Security: npmgen runs `cargo build`, which executes the target crate's build
+# scripts and proc-macros. Only run this on code you trust; never on untrusted
+# pull requests with registry tokens or other secrets in scope.
+
 inputs:
   version:
-    description: npmgen-cli version to install from crates.io. Empty installs the latest.
+    description: npmgen-cli version to install from crates.io. Pinned by default for reproducible, supply-chain-safe installs.
     required: false
-    default: ""
+    default: "0.3.0"
   manifest-path:
     description: Path to the target crate's Cargo.toml.
     required: false
