@@ -29,6 +29,9 @@ Build every target and assemble the tree:
 cargo npmgen
 ```
 
+By default npmgen publishes what `cargo build` would: the workspace default members, one npm package per binary, named after the binary.
+Crates marked `publish = false` are skipped unless you name them with `--package`.
+
 Assemble from binaries you already built, with no compilation:
 
 ```
@@ -38,9 +41,11 @@ cargo npmgen --no-build
 Useful flags:
 
 - `--out <dir>` sets the output root, default `dist/npm`.
-- `--package <name>` selects a workspace member.
+- `--package <name>` publishes only the named workspace members, repeatable or comma separated.
+- `--workspace` publishes every workspace member.
+- `--exclude <name>` drops workspace members from the selection, repeatable or comma separated.
+- `--bin <name>` publishes only the named binaries, repeatable or comma separated.
 - `--pkg-version <v>` overrides the version.
-- `--bin <name>` overrides the shipped binary name.
 - `--target <key>` keeps only the given platforms, repeatable or comma separated.
 - `--builder <cmd>` swaps the build driver, for example `cross` or `cargo-zigbuild`.
 
@@ -49,11 +54,10 @@ Every flag has an environment variant, listed by `npmgen --help`.
 ## Configuration
 
 Declare the payload under `[package.metadata.npmgen]`.
-Use `[workspace.metadata.npmgen]` when the root is a virtual workspace.
+`[workspace.metadata.npmgen]` sets defaults inherited by every member, the way cargo inherits `[workspace.package]`; a crate's own `[package.metadata.npmgen]` overrides them.
 
 ```toml
 [package.metadata.npmgen]
-bin = "mytool"
 launcher = { file = "launch.mjs", bin = "mytool" }
 include = ["templates", "README.md"]
 manifests = [".claude-plugin/plugin.json"]
