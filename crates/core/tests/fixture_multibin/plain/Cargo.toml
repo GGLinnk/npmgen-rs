@@ -1,0 +1,9 @@
+# A default-member with no npmgen config: it just ships its bin `solo`, named
+# after the binary, with no opt-in needed (cargo behavior).
+[package]
+name = "plain"
+version = "2.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/acme/plain"
+authors = ["Acme <dev@acme.test>"]

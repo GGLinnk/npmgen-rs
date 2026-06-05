@@ -1,0 +1,9 @@
+[package]
+name = "d2"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/acme/d2"
+authors = ["Acme <dev@acme.test>"]
+
+[package.metadata.npmgen]

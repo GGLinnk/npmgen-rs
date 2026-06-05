@@ -27,6 +27,33 @@ fn fixture_manifest() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture_crate/Cargo.toml")
 }
 
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/{name}/Cargo.toml"))
+}
+
+fn multibin_manifest() -> PathBuf {
+    fixture("fixture_multibin")
+}
+
+fn discover_one(manifest: &Path, overrides: &Overrides) -> Project {
+    let mut projects = Project::discover(manifest, overrides).expect("discovery succeeds");
+    assert_eq!(projects.len(), 1, "expected exactly one project");
+    projects.pop().unwrap()
+}
+
+fn bin_override(bin: &str) -> Overrides {
+    Overrides {
+        bins: vec![bin.to_owned()],
+        ..Overrides::default()
+    }
+}
+
+fn package_names(projects: &[Project]) -> Vec<String> {
+    let mut names: Vec<String> = projects.iter().map(Project::package_name).collect();
+    names.sort();
+    names
+}
+
 fn out_dir(slot: &str) -> PathBuf {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(slot);
     let _ = fs::remove_dir_all(&out);
@@ -190,26 +217,30 @@ fn matching_tag_succeeds_and_mismatch_errors() {
 
 #[test]
 fn overrides_select_package_and_bin() {
-    let bin = Project::load(
-        &fixture_manifest(),
-        &Overrides {
-            bin: Some("other".to_owned()),
-            ..Overrides::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(bin.bin, "other");
-    assert_eq!(bin.package.as_deref(), Some("fixture"));
+    // A real bin loads; the package is recorded for the build's --package.
+    let project = Project::load(&fixture_manifest(), &bin_override("nocmd")).unwrap();
+    assert_eq!(project.bin, "nocmd");
+    assert_eq!(project.package.as_deref(), Some("fixture"));
 
-    let error = Project::load(
+    // An unknown bin and an unknown package are both errors (like cargo).
+    let unknown_bin = Project::load(&fixture_manifest(), &bin_override("other")).unwrap_err();
+    assert!(matches!(
+        unknown_bin,
+        ProjectError::BinNotInWorkspace { .. }
+    ));
+
+    let unknown_package = Project::load(
         &fixture_manifest(),
         &Overrides {
-            package: Some("nope".to_owned()),
+            packages: vec!["nope".to_owned()],
             ..Overrides::default()
         },
     )
     .unwrap_err();
-    assert!(matches!(error, ProjectError::PackageNotFound { .. }));
+    assert!(matches!(
+        unknown_package,
+        ProjectError::PackageNotFound { .. }
+    ));
 }
 
 #[test]
@@ -506,4 +537,187 @@ fn an_injected_build_driver_drives_the_build_phase() {
         .unwrap();
 
     assert_eq!(fs::read(out.join("inj-linux-x64/inj")).unwrap(), b"STUB");
+}
+
+#[test]
+fn default_discovery_follows_default_members_and_skips_private() {
+    // default-members = multi (foo, bar) + plain (solo). `extra` is publishable
+    // but not a default member; `priv` is publish=false. So default => 3 bins.
+    let projects = Project::discover(&multibin_manifest(), &Overrides::default()).unwrap();
+    assert_eq!(
+        package_names(&projects),
+        ["@acme/bar", "@acme/foo", "@acme/solo"],
+    );
+
+    let out = out_dir("multibin");
+    Generator::for_projects(&projects)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+    // Each package's version is inherited from its owning member crate.
+    assert_eq!(
+        read_json(&out.join("foo/package.json"))["version"],
+        json!("1.0.0")
+    );
+    assert_eq!(
+        read_json(&out.join("solo/package.json"))["version"],
+        json!("2.0.0")
+    );
+    assert!(
+        !out.join("tool").exists(),
+        "a non-default member is not published by default"
+    );
+    assert!(
+        !out.join("secret").exists(),
+        "a publish=false crate is never published by default"
+    );
+}
+
+#[test]
+fn workspace_flag_adds_non_default_members_but_still_skips_private() {
+    let overrides = Overrides {
+        workspace: true,
+        ..Overrides::default()
+    };
+    let projects = Project::discover(&multibin_manifest(), &overrides).unwrap();
+    assert_eq!(
+        package_names(&projects),
+        ["@acme/bar", "@acme/foo", "@acme/solo", "@acme/tool"],
+        "--workspace adds extra's tool; priv stays private",
+    );
+}
+
+#[test]
+fn package_selects_one_member() {
+    let overrides = Overrides {
+        packages: vec!["extra".to_owned()],
+        ..Overrides::default()
+    };
+    let projects = Project::discover(&multibin_manifest(), &overrides).unwrap();
+    assert_eq!(package_names(&projects), ["@acme/tool"]);
+}
+
+#[test]
+fn naming_a_private_crate_publishes_it() {
+    // publish=false is skipped by default, but an explicit --package overrides.
+    let overrides = Overrides {
+        packages: vec!["priv".to_owned()],
+        ..Overrides::default()
+    };
+    let project = discover_one(&multibin_manifest(), &overrides);
+    assert_eq!(project.package_name(), "@acme/secret");
+    assert_eq!(project.package.as_deref(), Some("priv"));
+}
+
+#[test]
+fn exclude_drops_a_member() {
+    let overrides = Overrides {
+        workspace: true,
+        exclude: vec!["plain".to_owned()],
+        ..Overrides::default()
+    };
+    let projects = Project::discover(&multibin_manifest(), &overrides).unwrap();
+    assert_eq!(
+        package_names(&projects),
+        ["@acme/bar", "@acme/foo", "@acme/tool"]
+    );
+}
+
+#[test]
+fn bin_selects_a_single_binary() {
+    let project = discover_one(&multibin_manifest(), &bin_override("foo"));
+    assert_eq!(project.package_name(), "@acme/foo");
+    assert_eq!(project.package.as_deref(), Some("multi"));
+}
+
+#[test]
+fn bin_for_an_absent_bin_is_an_error() {
+    let error = Project::discover(&multibin_manifest(), &bin_override("ghost")).unwrap_err();
+    assert!(matches!(error, ProjectError::BinNotInWorkspace { .. }));
+}
+
+#[test]
+fn package_scopes_the_bin_search() {
+    // `foo` lives in `multi`, not `plain`; scoping to plain rejects it.
+    let overrides = Overrides {
+        packages: vec!["plain".to_owned()],
+        bins: vec!["foo".to_owned()],
+        ..Overrides::default()
+    };
+    let error = Project::discover(&multibin_manifest(), &overrides).unwrap_err();
+    assert!(matches!(error, ProjectError::UnknownBin { .. }));
+}
+
+#[test]
+fn version_override_applies_to_a_selected_bin() {
+    let overrides = Overrides {
+        bins: vec!["solo".to_owned()],
+        version: Some("9.9.9".to_owned()),
+        ..Overrides::default()
+    };
+    let project = discover_one(&multibin_manifest(), &overrides);
+    assert_eq!(project.package_name(), "@acme/solo");
+    assert_eq!(
+        project.version, "9.9.9",
+        "the override beats the member's 2.0.0"
+    );
+}
+
+#[test]
+fn discovery_generates_a_valid_tree_for_a_member_bin() {
+    // End to end: prove the generated tree is real, not just the in-memory Project.
+    let projects = Project::discover(&multibin_manifest(), &bin_override("solo")).unwrap();
+    let out = out_dir("cargo-select-e2e");
+    Generator::for_projects(&projects)
+        .out(&out)
+        .no_build(true)
+        .run()
+        .unwrap();
+
+    let meta = read_json(&out.join("solo/package.json"));
+    assert_eq!(meta["name"], json!("@acme/solo"));
+    assert_eq!(meta["version"], json!("2.0.0"));
+    assert!(
+        out.join("solo-linux-x64/package.json").is_file(),
+        "platform packages are generated for the selected bin"
+    );
+}
+
+#[test]
+fn standalone_crate_is_named_after_its_bins_not_the_repository() {
+    // coolpkg / coolrepo both differ from the bins ct/helper. Like cargo, both
+    // bins ship, each named after the binary, never @acme/coolrepo or coolpkg.
+    let projects = Project::discover(&fixture("fixture_plain"), &Overrides::default()).unwrap();
+    assert_eq!(package_names(&projects), ["@acme/ct", "@acme/helper"]);
+    assert_eq!(projects[0].version, "1.2.3");
+}
+
+#[test]
+fn an_ambiguous_bin_across_members_is_rejected() {
+    // d1 and d2 both define `clash`; default discovery cannot pick one.
+    let error = Project::discover(&fixture("fixture_dup"), &Overrides::default()).unwrap_err();
+    assert!(matches!(error, ProjectError::AmbiguousBin { .. }));
+
+    // --bin without --package is equally ambiguous.
+    let error = Project::discover(&fixture("fixture_dup"), &bin_override("clash")).unwrap_err();
+    assert!(matches!(error, ProjectError::AmbiguousBin { .. }));
+
+    // --package disambiguates.
+    let overrides = Overrides {
+        packages: vec!["d1".to_owned()],
+        ..Overrides::default()
+    };
+    let project = discover_one(&fixture("fixture_dup"), &overrides);
+    assert_eq!(project.package_name(), "@acme/clash");
+    assert_eq!(project.package.as_deref(), Some("d1"));
+}
+
+#[test]
+fn an_unrelated_malformed_config_does_not_block_a_bin_selection() {
+    // `bad` has an invalid npmgen table but does not own `solo`; selecting
+    // `solo` (owned by the well-formed `good`) must not parse `bad`'s config.
+    let project = discover_one(&fixture("fixture_badmember"), &bin_override("solo"));
+    assert_eq!(project.package_name(), "@acme/solo");
+    assert_eq!(project.package.as_deref(), Some("good"));
 }

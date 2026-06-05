@@ -1,0 +1,18 @@
+# Multi-member fixture exercising cargo's selection model.
+#   - root `multi`  : bins foo, bar          (in default-members)
+#   - member `plain`: bin solo               (in default-members)
+#   - member `extra`: bin tool               (publishable, NOT default-member)
+#   - member `priv` : bin secret, publish=false (private, skipped unless named)
+# Default discovery (default-members, no publish=false) => foo, bar, solo.
+# --workspace adds tool. --package priv is the only way to reach secret.
+[workspace]
+members = ["plain", "extra", "priv"]
+default-members = [".", "plain"]
+
+[package]
+name = "multi"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/acme/multi"
+authors = ["Acme <dev@acme.test>"]

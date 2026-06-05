@@ -1,5 +1,6 @@
-# Virtual workspace fixture: the root has no [package], so identity must come
-# from [workspace.package] and config from [workspace.metadata.npmgen].
+# Virtual workspace fixture: the root has no [package], so the member inherits
+# identity from [workspace.package] (resolved by cargo) and npmgen config from
+# [workspace.metadata.npmgen].
 [workspace]
 members = ["app"]
 
@@ -12,5 +13,4 @@ repository = "https://github.com/acme/vtool"
 authors = ["Acme Dev <dev@acme.test>"]
 
 [workspace.metadata.npmgen]
-bin = "vtool"
 manifests = [".claude-plugin/plugin.json"]

@@ -1,0 +1,5 @@
+# Two opted-in members each define a bin named `clash`. Published under that
+# bin name they would collide, so discovery must reject it as ambiguous and
+# ask the user to disambiguate with --package.
+[workspace]
+members = ["d1", "d2"]

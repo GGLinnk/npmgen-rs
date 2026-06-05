@@ -1,0 +1,9 @@
+# A publishable member that is NOT in default-members: discovered only with
+# --workspace (or --package extra), proving default-members is honored.
+[package]
+name = "extra"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/acme/extra"
+authors = ["Acme <dev@acme.test>"]

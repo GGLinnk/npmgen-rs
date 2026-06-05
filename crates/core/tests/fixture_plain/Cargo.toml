@@ -1,0 +1,13 @@
+# Standalone crate (its own [workspace] isolates it). Its package name and
+# repository basename (coolpkg / coolrepo) both differ from its bins, proving
+# the npm packages are named after the BINARIES, never the repo or package.
+# It defines two bins, so like `cargo build` it publishes both.
+[workspace]
+
+[package]
+name = "coolpkg"
+version = "1.2.3"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/acme/coolrepo"
+authors = ["Acme <dev@acme.test>"]

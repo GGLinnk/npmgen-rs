@@ -1,0 +1,6 @@
+# `good` owns the bin `solo` and is well-formed. `bad` opts in with an invalid
+# npmgen table (cargo treats metadata as opaque, so `cargo metadata` accepts
+# it; only npmgen's parser rejects it). A `--bin solo` selection must succeed
+# without parsing `bad`'s config, since `bad` does not own `solo`.
+[workspace]
+members = ["good", "bad"]

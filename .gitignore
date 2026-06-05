@@ -3,4 +3,12 @@ crates/core/tests/fixture_crate/target
 crates/core/tests/fixture_crate/Cargo.lock
 crates/core/tests/fixture_workspace/target
 crates/core/tests/fixture_workspace/Cargo.lock
+crates/core/tests/fixture_multibin/target
+crates/core/tests/fixture_multibin/Cargo.lock
+crates/core/tests/fixture_plain/target
+crates/core/tests/fixture_plain/Cargo.lock
+crates/core/tests/fixture_dup/target
+crates/core/tests/fixture_dup/Cargo.lock
+crates/core/tests/fixture_badmember/target
+crates/core/tests/fixture_badmember/Cargo.lock
 *.local.*

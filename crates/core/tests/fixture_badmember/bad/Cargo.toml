@@ -1,0 +1,10 @@
+[package]
+name = "bad"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/acme/bad"
+authors = ["Acme <dev@acme.test>"]
+
+[package.metadata.npmgen]
+this_key_is_not_valid = true
