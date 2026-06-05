@@ -24,6 +24,11 @@ impl<'a> CargoDriver<'a> {
 
 impl BuildDriver for CargoDriver<'_> {
     fn build(&self, project: &Project, target: &Target) -> Result<(), CompileError> {
+        if !project.workspace_root.is_dir() {
+            return Err(CompileError::MissingWorkspaceRoot {
+                path: project.workspace_root.clone(),
+            });
+        }
         info!(triple = %target.triple, bin = %project.bin, "building");
         let mut command = Command::new(self.command);
         command

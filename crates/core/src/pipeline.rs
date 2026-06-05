@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use tracing::{info, warn};
 
-use crate::compile::{BuildDriver, CargoDriver, Compiler};
+use crate::compile::{BuildDriver, CargoDriver, CompileError, Compiler};
 use crate::error::{Error, Result};
 use crate::npm::Assembler;
 use crate::project::Project;
@@ -99,6 +99,9 @@ impl<'a> Generator<'a> {
     /// the whole tree onto `out`. Either all projects land or none do.
     pub fn run(&self) -> Result<()> {
         let assembler = Assembler::new(&self.out)?;
+        if !self.no_build && self.build_driver.is_none() {
+            validate_driver(&self.driver)?;
+        }
         let mut total_targets = 0;
         let mut missing = Vec::new();
 
@@ -145,5 +148,41 @@ impl<'a> Generator<'a> {
             "generated npm publish tree",
         );
         Ok(())
+    }
+}
+
+/// Reject a build driver that is a path rather than a bare command name, so a
+/// crafted `--builder` cannot point the build at an arbitrary binary; the
+/// command is resolved through `PATH` like any cargo subcommand.
+fn validate_driver(driver: &str) -> Result<()> {
+    if driver.is_empty() || driver.contains('/') || driver.contains('\\') {
+        return Err(CompileError::InvalidDriver {
+            driver: driver.to_owned(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_driver;
+    use crate::error::Error;
+
+    #[test]
+    fn bare_command_drivers_are_accepted() {
+        assert!(validate_driver("cargo").is_ok());
+        assert!(validate_driver("cargo-zigbuild").is_ok());
+        assert!(validate_driver("cross").is_ok());
+    }
+
+    #[test]
+    fn path_like_or_empty_drivers_are_rejected() {
+        for bad in ["", "/tmp/evil", "../evil", "a/b", "a\\b"] {
+            assert!(matches!(
+                validate_driver(bad).unwrap_err(),
+                Error::Compile(_)
+            ));
+        }
     }
 }

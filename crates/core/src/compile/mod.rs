@@ -60,6 +60,12 @@ pub enum CompileError {
 
     #[error("binary for {triple} not found after a successful build: {}", path.display())]
     BinaryMissing { triple: String, path: PathBuf },
+
+    #[error("build driver {driver:?} must be a bare command name on PATH, not a path")]
+    InvalidDriver { driver: String },
+
+    #[error("workspace root does not exist: {}", path.display())]
+    MissingWorkspaceRoot { path: PathBuf },
 }
 
 #[cfg(test)]
@@ -123,5 +129,17 @@ mod tests {
             .compile_all(&project, std::slice::from_ref(&target))
             .unwrap();
         let _ = fs::remove_dir_all(&project.target_directory);
+    }
+
+    #[test]
+    fn a_missing_workspace_root_is_an_error() {
+        use super::CargoDriver;
+        let mut project = sample_project();
+        project.workspace_root = PathBuf::from("npmgen-nonexistent-workspace-root-xyz");
+        let target = Target::from_triple("x86_64-unknown-linux-gnu").unwrap();
+        let error = CargoDriver::new("cargo")
+            .build(&project, &target)
+            .unwrap_err();
+        assert!(matches!(error, CompileError::MissingWorkspaceRoot { .. }));
     }
 }
